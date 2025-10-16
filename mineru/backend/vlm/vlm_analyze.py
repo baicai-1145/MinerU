@@ -87,6 +87,11 @@ class ModelSingleton:
                         logger.warning(f'Error determining VRAM: {e}, using default batch_ratio: 1')
                         batch_size = 1
                 elif backend == "vllm-engine":
+                    # remove frontend-only hints that vllm does not understand
+                    unsupported = {}
+                    for key in ["device_mode", "virtual_vram"]:
+                        if key in kwargs:
+                            unsupported[key] = kwargs.pop(key)
                     try:
                         import vllm
                         from mineru_vl_utils import MinerULogitsProcessor
@@ -101,6 +106,10 @@ class ModelSingleton:
                     # 使用kwargs为 vllm初始化参数
                     vllm_llm = vllm.LLM(**kwargs)
                 elif backend == "vllm-async-engine":
+                    unsupported = {}
+                    for key in ["device_mode", "virtual_vram"]:
+                        if key in kwargs:
+                            unsupported[key] = kwargs.pop(key)
                     try:
                         from vllm.engine.arg_utils import AsyncEngineArgs
                         from vllm.v1.engine.async_llm import AsyncLLM

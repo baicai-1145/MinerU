@@ -1,0 +1,99 @@
+import axios from 'axios';
+
+const rawBase =
+  import.meta.env.VITE_MINERU_API_BASE ??
+  (typeof window !== 'undefined' ? window.location.origin : '');
+
+const baseURL = rawBase ? rawBase.replace(/\/$/, '') : undefined;
+
+const client = axios.create({
+  baseURL,
+  timeout: 120000
+});
+
+export interface CreateTaskPayload {
+  files: File[];
+  lang_list?: string[];
+  backend?: string;
+  parse_method?: string;
+  formula_enable?: boolean;
+  table_enable?: boolean;
+  device_mode?: string;
+  virtual_vram?: number;
+  model_source?: string;
+  server_url?: string;
+  start_page_id?: number;
+  end_page_id?: number;
+  return_md?: boolean;
+  return_middle_json?: boolean;
+  return_model_output?: boolean;
+  return_content_list?: boolean;
+  return_images?: boolean;
+  return_orig_pdf?: boolean;
+}
+
+export async function createTask(payload: CreateTaskPayload) {
+  const form = new FormData();
+  payload.files.forEach(file => form.append('files', file));
+
+  if (payload.lang_list?.length) {
+    payload.lang_list.forEach(lang => form.append('lang_list', lang));
+  }
+  if (payload.backend) form.append('backend', payload.backend);
+  if (payload.parse_method) form.append('parse_method', payload.parse_method);
+  if (payload.formula_enable !== undefined) {
+    form.append('formula_enable', String(payload.formula_enable));
+  }
+  if (payload.table_enable !== undefined) {
+    form.append('table_enable', String(payload.table_enable));
+  }
+  if (payload.device_mode) form.append('device_mode', payload.device_mode);
+  if (payload.virtual_vram !== undefined) {
+    form.append('virtual_vram', String(payload.virtual_vram));
+  }
+  if (payload.model_source) form.append('model_source', payload.model_source);
+  if (payload.server_url) form.append('server_url', payload.server_url);
+  if (payload.start_page_id !== undefined) form.append('start_page_id', String(payload.start_page_id));
+  if (payload.end_page_id !== undefined) form.append('end_page_id', String(payload.end_page_id));
+  if (payload.return_md !== undefined) form.append('return_md', String(payload.return_md));
+  if (payload.return_middle_json !== undefined) form.append('return_middle_json', String(payload.return_middle_json));
+  if (payload.return_model_output !== undefined) form.append('return_model_output', String(payload.return_model_output));
+  if (payload.return_content_list !== undefined) form.append('return_content_list', String(payload.return_content_list));
+  if (payload.return_images !== undefined) form.append('return_images', String(payload.return_images));
+  if (payload.return_orig_pdf !== undefined) form.append('return_orig_pdf', String(payload.return_orig_pdf));
+
+  const response = await client.post('/tasks', form, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  return response.data;
+}
+
+export async function fetchTasks() {
+  const response = await client.get('/tasks');
+  return response.data;
+}
+
+export async function fetchTask(taskId: string, includeContent = true) {
+  const response = await client.get(`/tasks/${taskId}`, {
+    params: { include_content: includeContent }
+  });
+  return response.data;
+}
+
+export function getArtifactUrl(taskId: string, relativePath: string) {
+  const base = client.defaults.baseURL ?? '';
+  const formatted = relativePath.replace(/^\//, '');
+  return `${base}/tasks/${taskId}/artifacts/${formatted}`;
+}
+
+export function getArtifactDataUrl(taskId: string, relativePath: string) {
+  const base = client.defaults.baseURL ?? '';
+  const formatted = relativePath.replace(/^\//, '');
+  const encoded = encodeURIComponent(formatted);
+  return `${base}/tasks/${taskId}/artifact-bytes?path=${encoded}`;
+}
+
+export async function retryTask(taskId: string) {
+  const response = await client.post(`/tasks/${taskId}/retry`);
+  return response.data;
+}

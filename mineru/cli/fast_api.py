@@ -8,9 +8,10 @@ import click
 import zipfile
 from pathlib import Path
 import glob
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from typing import List, Optional
 from loguru import logger
@@ -20,9 +21,30 @@ from mineru.cli.common import aio_do_parse, read_fn, pdf_suffixes, image_suffixe
 from mineru.utils.cli_parser import arg_parse
 from mineru.utils.guess_suffix_or_lang import guess_suffix_by_path
 from mineru.version import __version__
+from mineru.web.task_service import (
+    ENV_LOCK,
+    TaskManager,
+    TaskParams,
+    TaskUpload,
+    build_env_overrides,
+    temporary_environ,
+)
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+_cors_origins = os.getenv("MINERU_CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+if _cors_origins.strip() == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [origin.strip() for origin in _cors_origins.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+task_manager = TaskManager()
 
 
 def sanitize_filename(filename: str) -> str:
@@ -60,6 +82,242 @@ def get_infer_result(file_suffix_identifier: str, pdf_name: str, parse_dir: str)
     return None
 
 
+def _normalise_lang_list(lang_list: List[str], count: int) -> List[str]:
+    if count == 0:
+        return []
+    if not lang_list:
+        return ["ch"] * count
+    if len(lang_list) >= count:
+        return lang_list[:count]
+    return lang_list + [lang_list[0]] * (count - len(lang_list))
+
+
+async def _store_task_uploads(
+    task_id: str,
+    files: List[UploadFile],
+    base_output: Path,
+    lang_list: List[str],
+) -> List[TaskUpload]:
+    uploads_dir = (base_output / "tasks" / task_id / "uploads").resolve()
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    uploads: List[TaskUpload] = []
+    for index, file in enumerate(files):
+        original_name = os.path.basename(file.filename) if file.filename else f"document-{index}.pdf"
+        base_name = sanitize_filename(original_name)
+        stem, suffix = os.path.splitext(base_name)
+        stored_name = base_name if suffix else f"{base_name}.pdf"
+
+        target_path = uploads_dir / stored_name
+        counter = 1
+        while target_path.exists():
+            target_path = uploads_dir / f"{stem}_{counter}{suffix}"
+            stored_name = target_path.name
+            counter += 1
+
+        content = await file.read()
+        with open(target_path, "wb") as fp:
+            fp.write(content)
+        await file.close()
+
+        language = lang_list[index] if index < len(lang_list) else lang_list[0] if lang_list else "ch"
+
+        uploads.append(
+            TaskUpload(
+                original_name=original_name,
+                stored_name=stored_name,
+                stored_path=target_path,
+                language=language,
+            )
+        )
+
+    return uploads
+
+
+@app.get("/tasks")
+async def list_tasks():
+    summaries = await task_manager.list_tasks()
+    return {"tasks": summaries}
+
+
+@app.post("/tasks", status_code=202)
+async def create_task(
+        files: List[UploadFile] = File(...),
+        output_dir: str = Form("./output"),
+        lang_list: List[str] = Form(["ch"]),
+        backend: str = Form("pipeline"),
+        parse_method: str = Form("auto"),
+        formula_enable: bool = Form(True),
+        table_enable: bool = Form(True),
+        server_url: Optional[str] = Form(None),
+        return_md: bool = Form(True),
+        return_middle_json: bool = Form(False),
+        return_model_output: bool = Form(False),
+        return_content_list: bool = Form(False),
+        return_images: bool = Form(False),
+        return_orig_pdf: bool = Form(True),
+        start_page_id: int = Form(0),
+        end_page_id: int = Form(99999),
+        device_mode: Optional[str] = Form(None),
+        virtual_vram: Optional[int] = Form(None),
+        model_source: Optional[str] = Form(None),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="no files provided")
+
+    config = getattr(app.state, "config", {})
+    task_config = dict(config)
+    if device_mode is not None:
+        task_config["device_mode"] = device_mode
+    if virtual_vram is not None:
+        task_config["virtual_vram"] = virtual_vram
+    if model_source is not None:
+        task_config["model_source"] = model_source
+
+    task_id = uuid.uuid4().hex
+    base_output = Path(output_dir)
+    base_output.mkdir(parents=True, exist_ok=True)
+
+    normalised_lang_list = _normalise_lang_list(lang_list, len(files))
+    uploads = await _store_task_uploads(task_id, files, base_output, normalised_lang_list)
+
+    params = TaskParams(
+        backend=backend,
+        parse_method=parse_method,
+        formula_enable=formula_enable,
+        table_enable=table_enable,
+        return_md=return_md,
+        return_middle_json=return_middle_json,
+        return_model_output=return_model_output,
+        return_content_list=return_content_list,
+        return_images=return_images,
+        return_orig_pdf=return_orig_pdf,
+        start_page_id=start_page_id,
+        end_page_id=end_page_id,
+        server_url=server_url,
+        device_mode=device_mode,
+        virtual_vram=virtual_vram,
+        model_source=model_source,
+    )
+
+    await task_manager.create_task(
+        task_id=task_id,
+        uploads=uploads,
+        params=params,
+        base_output=base_output,
+        config=task_config,
+    )
+    payload = await task_manager.get_task_payload(task_id, include_content=False)
+    return payload
+
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str, include_content: bool = True):
+    try:
+        payload = await task_manager.get_task_payload(task_id, include_content=include_content)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task not found")
+    return payload
+
+
+ALLOWED_ORIGINS = allow_origins
+
+def apply_cors_headers(response, request: Request):
+    origin = request.headers.get("origin")
+    if origin and ("*" in ALLOWED_ORIGINS or origin in ALLOWED_ORIGINS):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Expose-Headers"] = (
+            "Accept-Ranges, Content-Length, Content-Range, Content-Disposition"
+        )
+    return response
+
+
+@app.api_route("/tasks/{task_id}/artifacts/{artifact_path:path}", methods=["GET", "HEAD"])
+async def download_artifact(request: Request, task_id: str, artifact_path: str):
+    try:
+        resolved = await task_manager.resolve_artifact(task_id, artifact_path)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task not found")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid artifact path")
+
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+    response = FileResponse(resolved)
+    return apply_cors_headers(response, request)
+
+
+@app.get("/tasks/{task_id}/artifact-bytes")
+async def download_artifact_bytes(
+        request: Request,
+        task_id: str,
+        path: str = Query(..., description="Artifact relative path within task workdir"),
+):
+    try:
+        resolved = await task_manager.resolve_artifact(task_id, path)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task not found")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid artifact path")
+
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+
+    def iter_file():
+        with resolved.open("rb") as handle:
+            while True:
+                chunk = handle.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+
+    response = StreamingResponse(iter_file(), media_type="application/octet-stream")
+    response.headers["Content-Disposition"] = 'inline; filename="artifact-preview"'
+    return apply_cors_headers(response, request)
+
+
+@app.websocket("/ws/tasks/{task_id}")
+async def task_stream(websocket: WebSocket, task_id: str):
+    await websocket.accept()
+    try:
+        snapshot = await task_manager.get_task_payload(task_id, include_content=True)
+    except KeyError:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.send_json({"event": "snapshot", "task": snapshot})
+
+    try:
+        queue = await task_manager.add_listener(task_id)
+    except KeyError:
+        await websocket.close(code=4404)
+        return
+
+    try:
+        while True:
+            message = await queue.get()
+            await websocket.send_json(message)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # pragma: no cover - safety net
+        logger.warning(f"websocket send failed for task {task_id}: {exc}")
+    finally:
+        await task_manager.remove_listener(task_id, queue)
+
+
+@app.post("/tasks/{task_id}/retry", status_code=202)
+async def retry_task(task_id: str):
+    try:
+        await task_manager.retry_task(task_id)
+        payload = await task_manager.get_task_payload(task_id, include_content=False)
+        return payload
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post(path="/file_parse",)
 async def parse_pdf(
         files: List[UploadFile] = File(...),
@@ -75,13 +333,24 @@ async def parse_pdf(
         return_model_output: bool = Form(False),
         return_content_list: bool = Form(False),
         return_images: bool = Form(False),
+        return_orig_pdf: bool = Form(True),
         response_format_zip: bool = Form(False),
         start_page_id: int = Form(0),
         end_page_id: int = Form(99999),
+        device_mode: Optional[str] = Form(None),
+        virtual_vram: Optional[int] = Form(None),
+        model_source: Optional[str] = Form(None),
 ):
 
     # 获取命令行配置参数
     config = getattr(app.state, "config", {})
+    call_config = dict(config)
+    if device_mode is not None:
+        call_config["device_mode"] = device_mode
+    if virtual_vram is not None:
+        call_config["virtual_vram"] = virtual_vram
+    if model_source is not None:
+        call_config["model_source"] = model_source
 
     try:
         # 创建唯一的输出目录
@@ -128,7 +397,26 @@ async def parse_pdf(
             actual_lang_list = [actual_lang_list[0] if actual_lang_list else "ch"] * len(pdf_file_names)
 
         # 调用异步处理函数
-        await aio_do_parse(
+        env_params = TaskParams(
+            backend=backend,
+            parse_method=parse_method,
+            formula_enable=formula_enable,
+            table_enable=table_enable,
+            return_md=return_md,
+            return_middle_json=return_middle_json,
+            return_model_output=return_model_output,
+            return_content_list=return_content_list,
+        return_images=return_images,
+        return_orig_pdf=return_orig_pdf,
+            start_page_id=start_page_id,
+            end_page_id=end_page_id,
+            server_url=server_url,
+            device_mode=device_mode,
+            virtual_vram=virtual_vram,
+            model_source=model_source,
+        )
+        env_overrides = build_env_overrides(env_params, call_config)
+        parse_kwargs = dict(
             output_dir=unique_dir,
             pdf_file_names=pdf_file_names,
             pdf_bytes_list=pdf_bytes_list,
@@ -143,12 +431,19 @@ async def parse_pdf(
             f_dump_md=return_md,
             f_dump_middle_json=return_middle_json,
             f_dump_model_output=return_model_output,
-            f_dump_orig_pdf=False,
+            f_dump_orig_pdf=return_orig_pdf,
             f_dump_content_list=return_content_list,
             start_page_id=start_page_id,
             end_page_id=end_page_id,
-            **config
         )
+        parse_kwargs.update(call_config)
+
+        if env_overrides:
+            async with ENV_LOCK:
+                with temporary_environ(env_overrides):
+                    await aio_do_parse(**parse_kwargs)
+        else:
+            await aio_do_parse(**parse_kwargs)
 
         # 根据 response_format_zip 决定返回类型
         if response_format_zip:
