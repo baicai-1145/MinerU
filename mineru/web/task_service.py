@@ -50,8 +50,11 @@ class TaskParams:
     return_model_output: bool
     return_content_list: bool
     return_images: bool
-    start_page_id: int
-    end_page_id: int
+    return_html: bool = False
+    return_docx: bool = False
+    return_latex: bool = False
+    start_page_id: int = 0
+    end_page_id: int = 99999
     server_url: Optional[str] = None
     device_mode: Optional[str] = None
     virtual_vram: Optional[int] = None
@@ -223,6 +226,9 @@ class TaskManager:
                             f_dump_model_output=params.return_model_output,
                             f_dump_orig_pdf=params.return_orig_pdf,
                             f_dump_content_list=params.return_content_list,
+                            f_dump_html=params.return_html,
+                            f_dump_docx=params.return_docx,
+                            f_dump_latex=params.return_latex,
                             start_page_id=params.start_page_id,
                             end_page_id=params.end_page_id,
                             **record.config,
@@ -245,6 +251,9 @@ class TaskManager:
                     f_dump_model_output=params.return_model_output,
                     f_dump_orig_pdf=params.return_orig_pdf,
                     f_dump_content_list=params.return_content_list,
+                    f_dump_html=params.return_html,
+                    f_dump_docx=params.return_docx,
+                    f_dump_latex=params.return_latex,
                     start_page_id=params.start_page_id,
                     end_page_id=params.end_page_id,
                     **record.config,
@@ -393,6 +402,26 @@ class TaskManager:
                 )
                 if include_content:
                     doc_payload["content_list"] = self._read_json(parse_dir / file_name)
+
+            if params.return_html:
+                file_name = f"{upload.stem}.html"
+                doc_payload["files"].append(
+                    self._build_file_meta(record, parse_dir / file_name, "html")
+                )
+                if include_content:
+                    doc_payload["html"] = self._read_text(parse_dir / file_name)
+
+            if params.return_docx:
+                file_name = f"{upload.stem}.docx"
+                doc_payload["files"].append(
+                    self._build_file_meta(record, parse_dir / file_name, "docx")
+                )
+
+            if params.return_latex:
+                file_name = f"{upload.stem}_latex.zip"
+                doc_payload["files"].append(
+                    self._build_file_meta(record, parse_dir / file_name, "latex_package")
+                )
 
             layout_pdf = parse_dir / f"{upload.stem}_layout.pdf"
             if layout_pdf.exists():

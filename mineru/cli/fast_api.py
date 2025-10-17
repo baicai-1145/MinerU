@@ -156,6 +156,9 @@ async def create_task(
         return_content_list: bool = Form(False),
         return_images: bool = Form(False),
         return_orig_pdf: bool = Form(True),
+        return_html: bool = Form(False),
+        return_docx: bool = Form(False),
+        return_latex: bool = Form(False),
         start_page_id: int = Form(0),
         end_page_id: int = Form(99999),
         device_mode: Optional[str] = Form(None),
@@ -192,6 +195,9 @@ async def create_task(
         return_content_list=return_content_list,
         return_images=return_images,
         return_orig_pdf=return_orig_pdf,
+        return_html=return_html,
+        return_docx=return_docx,
+        return_latex=return_latex,
         start_page_id=start_page_id,
         end_page_id=end_page_id,
         server_url=server_url,
@@ -334,6 +340,9 @@ async def parse_pdf(
         return_content_list: bool = Form(False),
         return_images: bool = Form(False),
         return_orig_pdf: bool = Form(True),
+        return_html: bool = Form(False),
+        return_docx: bool = Form(False),
+        return_latex: bool = Form(False),
         response_format_zip: bool = Form(False),
         start_page_id: int = Form(0),
         end_page_id: int = Form(99999),
@@ -406,8 +415,11 @@ async def parse_pdf(
             return_middle_json=return_middle_json,
             return_model_output=return_model_output,
             return_content_list=return_content_list,
-        return_images=return_images,
-        return_orig_pdf=return_orig_pdf,
+            return_images=return_images,
+            return_orig_pdf=return_orig_pdf,
+            return_html=return_html,
+            return_docx=return_docx,
+            return_latex=return_latex,
             start_page_id=start_page_id,
             end_page_id=end_page_id,
             server_url=server_url,
@@ -433,6 +445,9 @@ async def parse_pdf(
             f_dump_model_output=return_model_output,
             f_dump_orig_pdf=return_orig_pdf,
             f_dump_content_list=return_content_list,
+            f_dump_html=return_html,
+            f_dump_docx=return_docx,
+            f_dump_latex=return_latex,
             start_page_id=start_page_id,
             end_page_id=end_page_id,
         )
@@ -483,6 +498,21 @@ async def parse_pdf(
                         path = os.path.join(parse_dir, f"{pdf_name}_content_list.json")
                         if os.path.exists(path):
                             zf.write(path, arcname=os.path.join(safe_pdf_name, f"{safe_pdf_name}_content_list.json"))
+
+                    if return_html:
+                        path = os.path.join(parse_dir, f"{pdf_name}.html")
+                        if os.path.exists(path):
+                            zf.write(path, arcname=os.path.join(safe_pdf_name, f"{safe_pdf_name}.html"))
+
+                    if return_docx:
+                        path = os.path.join(parse_dir, f"{pdf_name}.docx")
+                        if os.path.exists(path):
+                            zf.write(path, arcname=os.path.join(safe_pdf_name, f"{safe_pdf_name}.docx"))
+
+                    if return_latex:
+                        path = os.path.join(parse_dir, f"{pdf_name}_latex.zip")
+                        if os.path.exists(path):
+                            zf.write(path, arcname=os.path.join(safe_pdf_name, f"{safe_pdf_name}_latex.zip"))
 
                     # 写入图片
                     if return_images:

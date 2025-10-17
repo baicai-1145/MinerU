@@ -3,6 +3,8 @@ import io
 import json
 import os
 import copy
+import zipfile
+from typing import List, Optional
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -14,6 +16,12 @@ from mineru.utils.enum_class import MakeMode
 from mineru.utils.guess_suffix_or_lang import guess_suffix_by_bytes
 from mineru.utils.pdf_image_tools import images_bytes_to_pdf_bytes
 from mineru.backend.vlm.vlm_middle_json_mkcontent import union_make as vlm_union_make
+from mineru.backend.exporters.renderers import (
+    content_list_to_docx,
+    content_list_to_html,
+    content_list_to_latex,
+    RenderAsset,
+)
 from mineru.backend.vlm.vlm_analyze import doc_analyze as vlm_doc_analyze
 from mineru.backend.vlm.vlm_analyze import aio_doc_analyze as aio_vlm_doc_analyze
 
@@ -99,6 +107,9 @@ def _process_output(
         f_dump_content_list,
         f_dump_middle_json,
         f_dump_model_output,
+        f_dump_html,
+        f_dump_docx,
+        f_dump_latex,
         f_make_md_mode,
         middle_json,
         model_output=None,
@@ -123,9 +134,50 @@ def _process_output(
         draw_line_sort_bbox(pdf_info, pdf_bytes, local_md_dir, f"{pdf_file_name}_line_sort.pdf")
 
     image_dir = str(os.path.basename(local_image_dir))
+    make_func = pipeline_union_make if is_pipeline else vlm_union_make
+    content_list_cache: Optional[List[dict]] = None
+
+    def ensure_content_list() -> List[dict]:
+        nonlocal content_list_cache
+        if content_list_cache is None:
+            content_list_cache = make_func(pdf_info, MakeMode.CONTENT_LIST, image_dir)
+        return content_list_cache
+
+    image_cache: dict[str, RenderAsset] = {}
+
+    def guess_mime(path: str) -> str:
+        ext = os.path.splitext(path)[1].lower()
+        return {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }.get(ext, "application/octet-stream")
+
+    def load_image_asset(path_str: str) -> Optional[RenderAsset]:
+        if not path_str:
+            return None
+        key = path_str
+        if key in image_cache:
+            return image_cache[key]
+        candidates: List[str] = []
+        if os.path.isabs(path_str):
+            candidates.append(path_str)
+        else:
+            candidates.append(os.path.join(local_md_dir, path_str))
+            candidates.append(os.path.join(local_image_dir, os.path.basename(path_str)))
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                with open(candidate, "rb") as f:
+                    data = f.read()
+                asset = RenderAsset(name=os.path.basename(candidate), data=data, mime=guess_mime(candidate))
+                image_cache[key] = asset
+                return asset
+        return None
 
     if f_dump_md:
-        make_func = pipeline_union_make if is_pipeline else vlm_union_make
         md_content_str = make_func(pdf_info, f_make_md_mode, image_dir)
         md_writer.write_string(
             f"{pdf_file_name}.md",
@@ -133,12 +185,35 @@ def _process_output(
         )
 
     if f_dump_content_list:
-        make_func = pipeline_union_make if is_pipeline else vlm_union_make
-        content_list = make_func(pdf_info, MakeMode.CONTENT_LIST, image_dir)
+        content_list = ensure_content_list()
         md_writer.write_string(
             f"{pdf_file_name}_content_list.json",
             json.dumps(content_list, ensure_ascii=False, indent=4),
         )
+
+    if f_dump_html:
+        content_list = ensure_content_list()
+        html_output = content_list_to_html(content_list, load_image_asset)
+        md_writer.write_string(f"{pdf_file_name}.html", html_output)
+
+    if f_dump_docx:
+        content_list = ensure_content_list()
+        docx_bytes = content_list_to_docx(content_list, load_image_asset)
+        md_writer.write(f"{pdf_file_name}.docx", docx_bytes)
+
+    if f_dump_latex:
+        content_list = ensure_content_list()
+        latex_document, used_images = content_list_to_latex(content_list)
+        latex_zip_path = os.path.join(local_md_dir, f"{pdf_file_name}_latex.zip")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{pdf_file_name}.tex", latex_document)
+            for image_path in sorted(set(used_images)):
+                asset = load_image_asset(image_path)
+                if asset is None:
+                    continue
+                zf.writestr(image_path, asset.data)
+        md_writer.write(latex_zip_path, buffer.getvalue())
 
     if f_dump_middle_json:
         md_writer.write_string(
@@ -170,6 +245,9 @@ def _process_pipeline(
         f_dump_model_output,
         f_dump_orig_pdf,
         f_dump_content_list,
+        f_dump_html,
+        f_dump_docx,
+        f_dump_latex,
         f_make_md_mode,
 ):
     """处理pipeline后端逻辑"""
@@ -206,6 +284,7 @@ def _process_pipeline(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
             f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, model_json, is_pipeline=True
         )
 
@@ -222,6 +301,9 @@ async def _async_process_vlm(
         f_dump_model_output,
         f_dump_orig_pdf,
         f_dump_content_list,
+        f_dump_html,
+        f_dump_docx,
+        f_dump_latex,
         f_make_md_mode,
         server_url=None,
         **kwargs,
@@ -247,6 +329,7 @@ async def _async_process_vlm(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
             f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, infer_result, is_pipeline=False
         )
 
@@ -263,6 +346,9 @@ def _process_vlm(
         f_dump_model_output,
         f_dump_orig_pdf,
         f_dump_content_list,
+        f_dump_html,
+        f_dump_docx,
+        f_dump_latex,
         f_make_md_mode,
         server_url=None,
         **kwargs,
@@ -288,6 +374,7 @@ def _process_vlm(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
             f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, infer_result, is_pipeline=False
         )
 
@@ -309,6 +396,9 @@ def do_parse(
         f_dump_model_output=True,
         f_dump_orig_pdf=True,
         f_dump_content_list=True,
+        f_dump_html=False,
+        f_dump_docx=False,
+        f_dump_latex=False,
         f_make_md_mode=MakeMode.MM_MD,
         start_page_id=0,
         end_page_id=None,
@@ -322,7 +412,8 @@ def do_parse(
             output_dir, pdf_file_names, pdf_bytes_list, p_lang_list,
             parse_method, formula_enable, table_enable,
             f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
-            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list, f_make_md_mode
+            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
+            f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode
         )
     else:
         if backend.startswith("vlm-"):
@@ -337,7 +428,8 @@ def do_parse(
         _process_vlm(
             output_dir, pdf_file_names, pdf_bytes_list, backend,
             f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
-            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list, f_make_md_mode,
+            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
+            f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode,
             server_url, **kwargs,
         )
 
@@ -359,6 +451,9 @@ async def aio_do_parse(
         f_dump_model_output=True,
         f_dump_orig_pdf=True,
         f_dump_content_list=True,
+        f_dump_html=False,
+        f_dump_docx=False,
+        f_dump_latex=False,
         f_make_md_mode=MakeMode.MM_MD,
         start_page_id=0,
         end_page_id=None,
@@ -373,7 +468,8 @@ async def aio_do_parse(
             output_dir, pdf_file_names, pdf_bytes_list, p_lang_list,
             parse_method, formula_enable, table_enable,
             f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
-            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list, f_make_md_mode
+            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
+            f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode
         )
     else:
         if backend.startswith("vlm-"):
@@ -388,7 +484,8 @@ async def aio_do_parse(
         await _async_process_vlm(
             output_dir, pdf_file_names, pdf_bytes_list, backend,
             f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
-            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list, f_make_md_mode,
+            f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
+            f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode,
             server_url, **kwargs,
         )
 
