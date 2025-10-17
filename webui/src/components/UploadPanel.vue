@@ -116,6 +116,15 @@
             <label>
               <input type="checkbox" v-model="form.return_model_output" /> 输出模型原始文件
             </label>
+            <label>
+              <input type="checkbox" v-model="form.return_html" /> 输出 HTML
+            </label>
+            <label>
+              <input type="checkbox" v-model="form.return_docx" /> 输出 DOCX
+            </label>
+            <label>
+              <input type="checkbox" v-model="form.return_latex" /> 输出 LaTeX
+            </label>
           </div>
         </div>
       </details>
@@ -157,6 +166,9 @@ const form = ref({
   return_content_list: true,
   return_images: false,
   return_orig_pdf: true,
+  return_html: true,
+  return_docx: true,
+  return_latex: true,
 });
 
 const backendOptions = [
@@ -230,6 +242,9 @@ function handleSubmit() {
     return_content_list: form.value.return_content_list,
     return_images: form.value.return_images,
     return_orig_pdf: form.value.return_orig_pdf,
+    return_html: form.value.return_html,
+    return_docx: form.value.return_docx,
+    return_latex: form.value.return_latex,
   };
 
   if (form.value.backend !== 'pipeline') {

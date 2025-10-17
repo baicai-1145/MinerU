@@ -30,6 +30,9 @@ export interface CreateTaskPayload {
   return_content_list?: boolean;
   return_images?: boolean;
   return_orig_pdf?: boolean;
+  return_html?: boolean;
+  return_docx?: boolean;
+  return_latex?: boolean;
 }
 
 export async function createTask(payload: CreateTaskPayload) {
@@ -61,6 +64,9 @@ export async function createTask(payload: CreateTaskPayload) {
   if (payload.return_content_list !== undefined) form.append('return_content_list', String(payload.return_content_list));
   if (payload.return_images !== undefined) form.append('return_images', String(payload.return_images));
   if (payload.return_orig_pdf !== undefined) form.append('return_orig_pdf', String(payload.return_orig_pdf));
+  if (payload.return_html !== undefined) form.append('return_html', String(payload.return_html));
+  if (payload.return_docx !== undefined) form.append('return_docx', String(payload.return_docx));
+  if (payload.return_latex !== undefined) form.append('return_latex', String(payload.return_latex));
 
   const response = await client.post('/tasks', form, {
     headers: { 'Content-Type': 'multipart/form-data' }

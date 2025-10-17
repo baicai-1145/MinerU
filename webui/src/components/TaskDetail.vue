@@ -21,11 +21,11 @@
               <span class="icon">Σ</span>
               <span>Latex</span>
             </button>
-            <button @click="handleDownload('html')" :disabled="!canDownloadMarkdown || isDownloading">
+            <button @click="handleDownload('html')" :disabled="!canDownloadHtml || isDownloading">
               <span class="icon">&lt;/&gt;</span>
               <span>HTML</span>
             </button>
-            <button @click="handleDownload('docx')" :disabled="!canDownloadMarkdown || isDownloading">
+            <button @click="handleDownload('docx')" :disabled="!canDownloadDocx || isDownloading">
               <span class="icon">D</span>
               <span>DOCX</span>
             </button>
@@ -79,12 +79,6 @@ import ResultPreview from './ResultPreview.vue';
 import { getArtifactUrl } from '@/services/api';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import MarkdownIt from 'markdown-it';
-import MarkdownItContainer from 'markdown-it-container';
-import MarkdownItHighlight from 'markdown-it-highlightjs';
-import MarkdownItMathjax from 'markdown-it-mathjax3';
-import MarkdownItMultiMdTable from 'markdown-it-multimd-table';
-import hljs from 'highlight.js';
 
 defineEmits<{
   (e: 'refresh', taskId: string): void;
@@ -109,19 +103,36 @@ const middleJson = computed(() => firstDocument.value?.middle_json ?? null);
 const contentListJson = computed(() => firstDocument.value?.content_list ?? null);
 const modelOutputJson = computed(() => firstDocument.value?.model_output ?? null);
 
-const downloadList = computed(() => {
-  const task = currentTask.value;
-  if (!task?.documents?.length) return [];
-  const doc = task.documents[0] as any;
+type ArtifactFile = {
+  name: string;
+  path: string;
+  type?: string;
+};
+
+const artifactFiles = computed<ArtifactFile[]>(() => {
+  const doc = firstDocument.value as any;
   const files = Array.isArray(doc?.files) ? doc.files : [];
   return files
-    .filter((file: any) => file.exists)
+    .filter((file: any) => file && file.exists && file.path)
     .map((file: any) => ({
-      name: file.name,
-      path: file.path,
-      url: getArtifactUrl(task.task_id, file.path)
+      name: file.name ?? (file.path ? String(file.path).split('/').pop() : 'artifact'),
+      path: resolveArtifactPath(file.path),
+      type: file.type,
     }));
 });
+
+const downloadList = computed(() => {
+  const task = currentTask.value;
+  if (!task) return [];
+  return artifactFiles.value.map(file => ({
+    ...file,
+    url: getArtifactUrl(task.task_id, file.path),
+  }));
+});
+
+const htmlArtifact = computed(() => artifactFiles.value.find(file => file.type === 'html') ?? null);
+const docxArtifact = computed(() => artifactFiles.value.find(file => file.type === 'docx') ?? null);
+const latexArtifact = computed(() => artifactFiles.value.find(file => file.type === 'latex_package') ?? null);
 
 const imageEntries = computed(() => {
   const taskId = currentTask.value?.task_id;
@@ -147,7 +158,9 @@ const imageEntries = computed(() => {
 
 const canDownloadMarkdown = computed(() => Boolean(markdownContent.value));
 const canDownloadJson = computed(() => Boolean(middleJson.value || contentListJson.value || modelOutputJson.value));
-const canDownloadLatex = canDownloadMarkdown;
+const canDownloadHtml = computed(() => Boolean(htmlArtifact.value));
+const canDownloadDocx = computed(() => Boolean(docxArtifact.value));
+const canDownloadLatex = computed(() => Boolean(latexArtifact.value));
 
 function statusLabel(status: string) {
   switch (status) {
@@ -260,39 +273,6 @@ async function fetchArtifactBlob(path: string): Promise<Blob> {
   return response.blob();
 }
 
-const markdownRenderer = new MarkdownIt({
-  html: true,
-  linkify: true,
-  breaks: true,
-  highlight(code: string, lang?: string) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return `<pre class="hljs"><code>${hljs.highlight(code, { language: lang, ignoreIllegals: true }).value}</code></pre>`;
-      } catch (err) {
-        console.warn('代码高亮失败', err);
-      }
-    }
-    const safe = MarkdownIt().utils.escapeHtml(code);
-    return `<pre class="hljs"><code>${safe}</code></pre>`;
-  }
-});
-
-markdownRenderer.use(MarkdownItHighlight, { auto: true, code: true });
-markdownRenderer.use(MarkdownItMathjax, {
-  tex: {
-    inlineMath: [['$', '$'], ['\\(', '\\)']],
-    displayMath: [['$$', '$$'], ['\\[', '\\]']]
-  }
-});
-markdownRenderer.use(MarkdownItMultiMdTable, {
-  multiline: true,
-  rowspan: true,
-  headerless: true
-});
-['info', 'warning', 'success', 'tip'].forEach(type => markdownRenderer.use(MarkdownItContainer, type));
-
-const imageDataCache = new Map<string, string>();
-
 async function downloadMarkdownPackage() {
   if (!canDownloadMarkdown.value) {
     uiStore.setError('没有可用的 Markdown 内容');
@@ -316,24 +296,23 @@ async function downloadMarkdownPackage() {
 }
 
 async function downloadHtmlFile() {
-  if (!canDownloadMarkdown.value) {
-    uiStore.setError('没有可用的 Markdown 内容');
+  const artifact = htmlArtifact.value;
+  if (!artifact) {
+    uiStore.setError('后端未提供 HTML 文件');
     return;
   }
-  const html = await buildInlineHtmlDocument();
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  saveAs(blob, `${docBaseName.value}.html`);
+  const blob = await fetchArtifactBlob(artifact.path);
+  saveAs(blob, artifact.name || `${docBaseName.value}.html`);
 }
 
 async function downloadDocxFile() {
-  if (!canDownloadMarkdown.value) {
-    uiStore.setError('没有可用的 Markdown 内容');
+  const artifact = docxArtifact.value;
+  if (!artifact) {
+    uiStore.setError('后端未提供 DOCX 文件');
     return;
   }
-  const html = await buildInlineHtmlDocument();
-  const module = await import('html-docx-js-typescript');
-  const blob = await module.asBlob(html);
-  saveAs(blob, `${docBaseName.value}.docx`);
+  const blob = await fetchArtifactBlob(artifact.path);
+  saveAs(blob, artifact.name || `${docBaseName.value}.docx`);
 }
 
 async function downloadJsonBundle() {
@@ -356,181 +335,17 @@ async function downloadJsonBundle() {
 }
 
 async function downloadLatexFile() {
-  if (!canDownloadLatex.value) {
-    uiStore.setError('没有可用的 Markdown 内容');
+  const artifact = latexArtifact.value;
+  if (!artifact) {
+    uiStore.setError('后端未提供 LaTeX 文件');
     return;
   }
-  const latexBody = markdownToLatex(markdownContent.value);
-  const template = `\\documentclass{article}
-\\usepackage[UTF8]{ctex}
-\\usepackage{amsmath, amssymb}
-\\usepackage{graphicx}
-\\usepackage{hyperref}
-\\begin{document}
-${latexBody}
-\\end{document}
-`;
-  const zip = new JSZip();
-  zip.file(`${docBaseName.value}.tex`, template);
-  if (imageEntries.value.length) {
-    const folder = zip.folder('images');
-    for (const image of imageEntries.value) {
-      try {
-        const blob = await fetchImageBlob(image.path);
-        folder?.file(image.name, blob);
-      } catch (error) {
-        console.warn('下载图片失败', image.path, error);
-      }
-    }
-  }
-  const blob = await zip.generateAsync({ type: 'blob' });
-  saveAs(blob, `${docBaseName.value}_latex.zip`);
-}
-
-function markdownToLatex(markdown: string): string {
-  const lines = markdown.split(/\r?\n/);
-  const result: string[] = [];
-  let inItemize = false;
-  let inEnumerate = false;
-
-  const flushLists = () => {
-    if (inItemize) {
-      result.push('\\end{itemize}');
-      inItemize = false;
-    }
-    if (inEnumerate) {
-      result.push('\\end{enumerate}');
-      inEnumerate = false;
-    }
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (/^#{6}\s+/.test(line)) {
-      flushLists();
-      result.push(`\\subparagraph{${convertInline(line.replace(/^#{6}\s+/, ''))}}`);
-      continue;
-    }
-    if (/^#{5}\s+/.test(line)) {
-      flushLists();
-      result.push(`\\paragraph{${convertInline(line.replace(/^#{5}\s+/, ''))}}`);
-      continue;
-    }
-    if (/^#{4}\s+/.test(line)) {
-      flushLists();
-      result.push(`\\subsubsection{${convertInline(line.replace(/^#{4}\s+/, ''))}}`);
-      continue;
-    }
-    if (/^#{3}\s+/.test(line)) {
-      flushLists();
-      result.push(`\\subsection{${convertInline(line.replace(/^#{3}\s+/, ''))}}`);
-      continue;
-    }
-    if (/^#{2}\s+/.test(line)) {
-      flushLists();
-      result.push(`\\section{${convertInline(line.replace(/^#{2}\s+/, ''))}}`);
-      continue;
-    }
-    if (/^#\s+/.test(line)) {
-      flushLists();
-      result.push(`\\section*{${convertInline(line.replace(/^#\s+/, ''))}}`);
-      continue;
-    }
-    if (/^\d+\.\s+/.test(line)) {
-      if (!inEnumerate) {
-        flushLists();
-        result.push('\\begin{enumerate}');
-        inEnumerate = true;
-      }
-      const text = line.replace(/^\d+\.\s+/, '');
-      result.push(`\\item ${convertInline(text)}`);
-      continue;
-    }
-    if (/^[-*+]\s+/.test(line)) {
-      if (!inItemize) {
-        flushLists();
-        result.push('\\begin{itemize}');
-        inItemize = true;
-      }
-      const text = line.replace(/^[-*+]\s+/, '');
-      result.push(`\\item ${convertInline(text)}`);
-      continue;
-    }
-    if (!line.trim()) {
-      flushLists();
-      result.push('');
-      continue;
-    }
-    flushLists();
-    result.push(convertInline(line) + '\\\\');
-  }
-
-  flushLists();
-  return result.join('\n');
-}
-
-function convertInline(input: string): string {
-  return input
-    .replace(/\\\\\n/g, '\\\\')
-    .replace(/\\\*/g, '*')
-    .replace(/\*\*(.+?)\*\*/g, '\\textbf{$1}')
-    .replace(/\*(.+?)\*/g, '\\emph{$1}')
-    .replace(/`([^`]+)`/g, '\\texttt{$1}')
-    .replace(/\[(.+?)\]\((.+?)\)/g, '\\href{$2}{$1}')
-    .replace(/~/g, '\\textasciitilde{}');
+  const blob = await fetchArtifactBlob(artifact.path);
+  saveAs(blob, artifact.name || `${docBaseName.value}_latex.zip`);
 }
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
-async function buildInlineHtmlDocument(): Promise<string> {
-  const htmlBody = markdownRenderer.render(markdownContent.value);
-  const container = document.createElement('div');
-  container.innerHTML = htmlBody;
-  const images = Array.from(container.querySelectorAll('img'));
-  await Promise.all(
-    images.map(async img => {
-      const src = img.getAttribute('src');
-      if (!src || src.startsWith('data:')) {
-        return;
-      }
-      try {
-        const dataUrl = await fetchImageDataUrl(src);
-        img.setAttribute('src', dataUrl);
-      } catch (error) {
-        console.warn('嵌入图片失败', src, error);
-      }
-    })
-  );
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <title>${docBaseName.value}</title>
-</head>
-<body>
-${container.innerHTML}
-</body>
-</html>`;
-}
-
-async function fetchImageDataUrl(path: string): Promise<string> {
-  if (imageDataCache.has(path)) {
-    return imageDataCache.get(path)!;
-  }
-  const blob = await fetchImageBlob(path);
-  const dataUrl = await blobToDataUrl(blob);
-  imageDataCache.set(path, dataUrl);
-  return dataUrl;
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise(resolve => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(blob);
-  });
 }
 
 async function fetchImageBlob(src: string): Promise<Blob> {
