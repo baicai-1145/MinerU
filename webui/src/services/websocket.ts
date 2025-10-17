@@ -15,12 +15,20 @@ export class TaskWebSocket {
   private currentTaskId: string | null = null;
 
   constructor(baseUrl?: string) {
-    this.baseUrl = baseUrl ?? 'ws://localhost:8000';
+    if (baseUrl) {
+      this.baseUrl = baseUrl.replace(/\/$/, '');
+    } else if (typeof window !== 'undefined') {
+      this.baseUrl = window.location.origin.replace(/\/$/, '');
+    } else {
+      this.baseUrl = 'http://127.0.0.1:8000';
+    }
   }
 
   connect(taskId: string) {
     this.currentTaskId = taskId;
-    const url = `${this.baseUrl.replace(/^http/, 'ws')}/ws/tasks/${taskId}`;
+    const base = this.baseUrl.replace(/^http/, 'ws');
+    const normalized = base.endsWith('/') ? base.slice(0, -1) : base;
+    const url = `${normalized}/ws/tasks/${taskId}`;
     this.socket = new WebSocket(url);
 
     this.socket.onmessage = event => {
