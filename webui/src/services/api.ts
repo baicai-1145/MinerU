@@ -103,3 +103,18 @@ export async function retryTask(taskId: string) {
   const response = await client.post(`/tasks/${taskId}/retry`);
   return response.data;
 }
+
+export interface MineruSettings {
+  backend: string;
+  parse_method: string;
+  model_source: string | null;
+  device_mode: string | null;
+  virtual_vram: number | null;
+  server_url: string | null;
+  default_language: string;
+}
+
+export async function fetchSettings(): Promise<MineruSettings> {
+  const response = await client.get('/settings');
+  return response.data;
+}

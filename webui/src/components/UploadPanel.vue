@@ -25,57 +25,10 @@
 
         <div class="advanced-grid">
           <div class="field">
-            <label>解析后端</label>
-            <select v-model="form.backend">
-              <option v-for="option in backendOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </option>
-            </select>
-            <p class="hint">pipeline 适合常规 PDF，VLM 更擅长高难度文档。使用 vLLM 请选 async 版本。</p>
-          </div>
-
-          <div class="field" v-if="isPipelineBackend">
-            <label>解析策略</label>
-            <select v-model="form.parse_method">
-              <option value="auto">自动</option>
-              <option value="txt">文本优先</option>
-              <option value="ocr">强制 OCR</option>
-            </select>
-          </div>
-          <div class="field" v-else>
-            <label>解析策略</label>
-            <input v-model="form.parse_method" disabled />
-          </div>
-
-          <div class="field">
             <label>语言</label>
             <select v-model="form.language">
               <option v-for="lang in languageOptions" :key="lang" :value="lang">{{ lang }}</option>
             </select>
-          </div>
-
-          <div class="field">
-            <label>模型源</label>
-            <select v-model="form.model_source">
-              <option value="huggingface">huggingface</option>
-              <option value="modelscope">modelscope</option>
-              <option value="local">local</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>设备模式</label>
-            <input v-model="form.device_mode" placeholder="如 cpu / cuda:0" />
-          </div>
-
-          <div class="field">
-            <label>虚拟显存上限 (GB)</label>
-            <input v-model="form.virtual_vram" type="number" min="1" placeholder="自动" />
-          </div>
-
-          <div class="field" v-if="requiresServerUrl">
-            <label>VLM 服务 URL</label>
-            <input v-model="form.server_url" placeholder="http://127.0.0.1:30000" />
           </div>
 
           <div class="field">
@@ -139,8 +92,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useUiStore } from '@/stores/uiStore';
+import { fetchSettings } from '@/services/api';
 import type { CreateTaskPayload } from '@/services/api';
 
 const uiStore = useUiStore();
@@ -171,13 +125,6 @@ const form = ref({
   return_latex: true,
 });
 
-const backendOptions = [
-  { label: 'pipeline', value: 'pipeline' },
-  { label: 'vlm-transformers', value: 'vlm-transformers' },
-  { label: 'vlm-vllm-async-engine', value: 'vlm-vllm-async-engine' },
-  { label: 'vlm-http-client', value: 'vlm-http-client' },
-];
-
 const languageOptions = ['ch', 'en', 'latin', 'arabic', 'korean', 'japan', 'chinese_cht'];
 
 const emit = defineEmits<{
@@ -185,20 +132,28 @@ const emit = defineEmits<{
 }>();
 
 const isUploading = computed(() => uiStore.isUploading);
-const isPipelineBackend = computed(() => form.value.backend === 'pipeline');
-const requiresServerUrl = computed(() => form.value.backend === 'vlm-http-client');
 
-watch(
-  () => form.value.backend,
-  backend => {
-    if (backend !== 'pipeline') {
-      form.value.parse_method = 'vlm';
-    } else if (form.value.parse_method === 'vlm') {
-      form.value.parse_method = 'auto';
+async function loadSettings() {
+  try {
+    const data = await fetchSettings();
+    form.value.backend = data.backend;
+    form.value.parse_method = data.parse_method;
+    form.value.model_source = data.model_source ?? '';
+    form.value.device_mode = data.device_mode ?? '';
+    form.value.virtual_vram = data.virtual_vram !== null ? String(data.virtual_vram) : '';
+    form.value.server_url = data.server_url ?? '';
+    if (data.default_language) {
+      form.value.language = data.default_language;
     }
-  },
-  { immediate: true },
-);
+  } catch (error) {
+    console.error(error);
+    uiStore.setError('加载服务器配置失败');
+  }
+}
+
+onMounted(() => {
+  loadSettings();
+});
 
 function toggleAdvanced() {
   showAdvanced.value = !showAdvanced.value;

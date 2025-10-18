@@ -1,19 +1,20 @@
 import uuid
 import os
 import re
-import tempfile
 import asyncio
-import uvicorn
 import click
-import zipfile
-from pathlib import Path
 import glob
+import tempfile
+import uvicorn
+import zipfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from loguru import logger
 from base64 import b64encode
 
@@ -92,13 +93,79 @@ def _normalise_lang_list(lang_list: List[str], count: int) -> List[str]:
     return lang_list + [lang_list[0]] * (count - len(lang_list))
 
 
+@dataclass
+class AdvancedSettings:
+    backend: str
+    parse_method: str
+    model_source: Optional[str]
+    device_mode: Optional[str]
+    virtual_vram: Optional[int]
+    server_url: Optional[str]
+
+
+def _first_hop_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        candidate = forwarded_for.split(",")[0].strip()
+        if candidate:
+            return candidate
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _sanitize_scope(raw: str) -> str:
+    scope = raw.strip() or "unknown"
+    scope = re.sub(r"[^0-9A-Za-z_.-]", "_", scope)
+    return scope[:64]
+
+
+def _resolve_user_scope(request: Request) -> str:
+    return _sanitize_scope(_first_hop_ip(request))
+
+
+def _resolve_virtual_vram(config: Dict[str, Any]) -> Optional[int]:
+    value = config.get("virtual_vram")
+    if value is None:
+        value = config.get("virtual_vram_size")
+    if value in ("", None):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_advanced_settings(config: Dict[str, Any]) -> AdvancedSettings:
+    backend = str(config.get("backend") or config.get("engine") or "vlm-http-client")
+    parse_method = config.get("parse_method")
+    if not parse_method:
+        parse_method = "auto" if backend == "pipeline" else "vlm"
+    model_source = config.get("model_source")
+    device_mode = config.get("device_mode") or config.get("device")
+    virtual_vram = _resolve_virtual_vram(config)
+    server_url = config.get("server_url") or config.get("vlm_server_url")
+    if not server_url and backend.endswith("http-client"):
+        server_url = "http://127.0.0.1:30000"
+
+    return AdvancedSettings(
+        backend=backend,
+        parse_method=str(parse_method),
+        model_source=str(model_source) if model_source is not None else None,
+        device_mode=str(device_mode) if device_mode is not None else None,
+        virtual_vram=virtual_vram,
+        server_url=str(server_url) if server_url is not None else None,
+    )
+
+
 async def _store_task_uploads(
     task_id: str,
     files: List[UploadFile],
+    user_scope: str,
     base_output: Path,
     lang_list: List[str],
 ) -> List[TaskUpload]:
-    uploads_dir = (base_output / "tasks" / task_id / "uploads").resolve()
+    uploads_dir = (base_output / "tasks" / user_scope / task_id / "uploads").resolve()
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     uploads: List[TaskUpload] = []
@@ -140,16 +207,27 @@ async def list_tasks():
     return {"tasks": summaries}
 
 
+@app.get("/settings")
+async def read_settings() -> Dict[str, Any]:
+    config = getattr(app.state, "config", {})
+    advanced = _resolve_advanced_settings(config)
+    return {
+        **asdict(advanced),
+        "default_language": config.get("language", "ch"),
+    }
+
+
 @app.post("/tasks", status_code=202)
 async def create_task(
+        request: Request,
         files: List[UploadFile] = File(...),
         output_dir: str = Form("./output"),
         lang_list: List[str] = Form(["ch"]),
-        backend: str = Form("pipeline"),
-        parse_method: str = Form("auto"),
+        backend_form: str = Form("pipeline"),
+        parse_method_form: str = Form("auto"),
         formula_enable: bool = Form(True),
         table_enable: bool = Form(True),
-        server_url: Optional[str] = Form(None),
+        server_url_form: Optional[str] = Form(None),
         return_md: bool = Form(True),
         return_middle_json: bool = Form(False),
         return_model_output: bool = Form(False),
@@ -161,32 +239,36 @@ async def create_task(
         return_latex: bool = Form(False),
         start_page_id: int = Form(0),
         end_page_id: int = Form(99999),
-        device_mode: Optional[str] = Form(None),
-        virtual_vram: Optional[int] = Form(None),
-        model_source: Optional[str] = Form(None),
-):
+        device_mode_form: Optional[str] = Form(None),
+        virtual_vram_form: Optional[int] = Form(None),
+        model_source_form: Optional[str] = Form(None),
+) -> Dict[str, Any]:
     if not files:
         raise HTTPException(status_code=400, detail="no files provided")
 
     config = getattr(app.state, "config", {})
+    advanced = _resolve_advanced_settings(config)
     task_config = dict(config)
-    if device_mode is not None:
-        task_config["device_mode"] = device_mode
-    if virtual_vram is not None:
-        task_config["virtual_vram"] = virtual_vram
-    if model_source is not None:
-        task_config["model_source"] = model_source
+    task_config.pop("server_url", None)
+    if advanced.device_mode:
+        task_config["device_mode"] = advanced.device_mode
+    if advanced.virtual_vram is not None:
+        task_config["virtual_vram"] = advanced.virtual_vram
+    if advanced.model_source:
+        task_config["model_source"] = advanced.model_source
 
     task_id = uuid.uuid4().hex
     base_output = Path(output_dir)
     base_output.mkdir(parents=True, exist_ok=True)
 
+    user_scope = _resolve_user_scope(request)
     normalised_lang_list = _normalise_lang_list(lang_list, len(files))
-    uploads = await _store_task_uploads(task_id, files, base_output, normalised_lang_list)
+    uploads = await _store_task_uploads(task_id, files, user_scope, base_output, normalised_lang_list)
+    task_config.setdefault("user_scope", user_scope)
 
     params = TaskParams(
-        backend=backend,
-        parse_method=parse_method,
+        backend=advanced.backend,
+        parse_method=advanced.parse_method,
         formula_enable=formula_enable,
         table_enable=table_enable,
         return_md=return_md,
@@ -200,15 +282,16 @@ async def create_task(
         return_latex=return_latex,
         start_page_id=start_page_id,
         end_page_id=end_page_id,
-        server_url=server_url,
-        device_mode=device_mode,
-        virtual_vram=virtual_vram,
-        model_source=model_source,
+        server_url=advanced.server_url,
+        device_mode=advanced.device_mode,
+        virtual_vram=advanced.virtual_vram,
+        model_source=advanced.model_source,
     )
 
     await task_manager.create_task(
         task_id=task_id,
         uploads=uploads,
+        user_scope=user_scope,
         params=params,
         base_output=base_output,
         config=task_config,

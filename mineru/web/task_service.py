@@ -85,6 +85,7 @@ class TaskRecord:
 
     task_id: str
     uploads: List[TaskUpload]
+    user_scope: str
     params: TaskParams
     work_dir: Path
     artifacts_dir: Path
@@ -104,6 +105,7 @@ class TaskRecord:
         return {
             "task_id": self.task_id,
             "status": self.status.value,
+            "user_scope": self.user_scope,
             "backend": self.params.backend,
             "parse_method": self.params.parse_method,
             "created_at": self.created_at.isoformat(),
@@ -127,13 +129,14 @@ class TaskManager:
         self,
         task_id: str,
         uploads: List[TaskUpload],
+        user_scope: str,
         params: TaskParams,
         base_output: Path,
         config: Optional[Dict[str, Any]] = None,
     ) -> TaskRecord:
         """Register a new task and schedule execution."""
         config = config or {}
-        work_dir = (base_output / "tasks" / task_id).resolve()
+        work_dir = (base_output / "tasks" / user_scope / task_id).resolve()
         artifacts_dir = work_dir / "artifacts"
         logs_dir = work_dir / "logs"
 
@@ -143,6 +146,7 @@ class TaskManager:
         record = TaskRecord(
             task_id=task_id,
             uploads=uploads,
+            user_scope=user_scope,
             params=params,
             work_dir=work_dir,
             artifacts_dir=artifacts_dir,
@@ -179,6 +183,7 @@ class TaskManager:
             "error": record.error,
             "created_at": record.created_at.isoformat(),
             "updated_at": record.updated_at.isoformat(),
+            "user_scope": record.user_scope,
             "params": asdict(record.params),
             "uploads": [
                 {
@@ -207,12 +212,7 @@ class TaskManager:
         if not root.exists() or not root.is_dir():
             return
 
-        for task_dir in root.iterdir():
-            if not task_dir.is_dir():
-                continue
-            metadata_path = task_dir / "task.json"
-            if not metadata_path.exists():
-                continue
+        for metadata_path in root.rglob("task.json"):
             try:
                 with metadata_path.open("r", encoding="utf-8") as fp:
                     metadata = json.load(fp)
@@ -245,6 +245,7 @@ class TaskManager:
             record = TaskRecord(
                 task_id=metadata["task_id"],
                 uploads=uploads,
+                user_scope=metadata.get("user_scope", "default"),
                 params=params,
                 work_dir=Path(metadata["work_dir"]),
                 artifacts_dir=Path(metadata["artifacts_dir"]),

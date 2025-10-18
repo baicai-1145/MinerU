@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 export interface TaskSummary {
   task_id: string;
   status: string;
+  user_scope?: string;
   backend: string;
   parse_method: string;
   created_at: string;
