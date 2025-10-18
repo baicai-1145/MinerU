@@ -234,7 +234,8 @@ async function loadPdf() {
   }
 
   if (pdfDataCache.has(url)) {
-    pdfData.value = pdfDataCache.get(url)!;
+    const cached = pdfDataCache.get(url)!;
+    pdfData.value = new Uint8Array(cached);
     pdfError.value = null;
     pdfLoading.value = false;
     return;
@@ -258,7 +259,7 @@ async function loadPdf() {
     }
     const bytes = new Uint8Array(buffer);
     pdfDataCache.set(url, bytes);
-    pdfData.value = bytes;
+    pdfData.value = new Uint8Array(bytes);
     pdfError.value = null;
   } catch (error) {
     if ((error as any)?.name === 'AbortError') {
@@ -343,6 +344,12 @@ watch(splitMode, value => {
     pdfLoading.value = false;
     pdfError.value = null;
     pdfData.value = null;
+  }
+});
+
+watch(activeTab, tab => {
+  if (tab === 'markdown' && splitMode.value) {
+    void loadPdf();
   }
 });
 
