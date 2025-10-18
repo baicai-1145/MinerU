@@ -7,7 +7,7 @@
       </div>
       <div class="header-actions">
         <nav class="header-nav">
-          <a href="https://github.com/opendatalab/MinerU" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/baicai-1145/MinerU" target="_blank" rel="noopener">GitHub</a>
           <a href="https://opendatalab.github.io/MinerU/zh/quick_start/index.html" target="_blank" rel="noopener"
             >文档</a
           >
@@ -45,7 +45,7 @@ const taskStore = useTaskStore();
 const uiStore = useUiStore();
 const socket = new TaskWebSocket(import.meta.env.VITE_MINERU_API_BASE);
 const errorMessage = computed(() => uiStore.errorMessage);
-const theme = ref(localStorage.getItem('mineru-webui-theme') ?? 'dark');
+const theme = ref(localStorage.getItem('mineru-webui-theme') ?? 'light');
 const themeLabel = computed(() => (theme.value === 'dark' ? '亮色模式' : '暗色模式'));
 
 async function refreshTasks() {
