@@ -12,6 +12,15 @@
             >文档</a
           >
         </nav>
+        <div class="auth-actions">
+          <template v-if="authStore.isLoggedIn">
+            <span class="user-tag">已登录：{{ authStore.username }}</span>
+            <button class="ghost" @click="handleLogout">退出</button>
+          </template>
+          <template v-else>
+            <button class="ghost" @click="authStore.open('login')">登录 / 注册</button>
+          </template>
+        </div>
         <button class="ghost" @click="toggleTheme">{{ themeLabel }}</button>
         <button class="accent" @click="refreshTasks">刷新任务</button>
       </div>
@@ -26,6 +35,7 @@
       </section>
     </main>
     <ErrorBanner :message="errorMessage" @close="uiStore.clearError" />
+    <AuthDialog />
   </div>
 </template>
 
@@ -34,8 +44,10 @@ import UploadPanel from '@/components/UploadPanel.vue';
 import TaskList from '@/components/TaskList.vue';
 import TaskDetail from '@/components/TaskDetail.vue';
 import ErrorBanner from '@/components/ErrorBanner.vue';
+import AuthDialog from '@/components/AuthDialog.vue';
 import { useTaskStore } from '@/stores/taskStore';
 import { useUiStore } from '@/stores/uiStore';
+import { useAuthStore } from '@/stores/authStore';
 import { createTask, fetchTask, fetchTasks, retryTask } from '@/services/api';
 import type { CreateTaskPayload } from '@/services/api';
 import { TaskWebSocket } from '@/services/websocket';
@@ -44,6 +56,7 @@ import { appConfig } from '@/config';
 
 const taskStore = useTaskStore();
 const uiStore = useUiStore();
+const authStore = useAuthStore();
 const socket = new TaskWebSocket(appConfig.apiBase);
 const errorMessage = computed(() => uiStore.errorMessage);
 const theme = ref(localStorage.getItem('mineru-webui-theme') ?? 'light');
@@ -146,6 +159,7 @@ function handleSocketEvent(event: any) {
 }
 
 onMounted(() => {
+  authStore.initialize();
   refreshTasks();
   applyTheme(theme.value);
 });
@@ -189,6 +203,20 @@ function applyTheme(value: string) {
     body.classList.remove('theme-light');
   }
 }
+
+function handleLogout() {
+  authStore.logout();
+  uiStore.setError('已退出登录，匿名任务将在 7 天后自动清理');
+}
+
+watch(
+  () => authStore.userId,
+  () => {
+    taskStore.setCurrentTask(null);
+    socket.close();
+    refreshTasks();
+  }
+);
 </script>
 
 <style scoped>
@@ -232,6 +260,21 @@ function applyTheme(value: string) {
   display: flex;
   align-items: center;
   gap: 1rem;
+}
+
+.auth-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.auth-actions .user-tag {
+  padding: 0.25rem 0.6rem;
+  background: var(--bg-hover);
+  border-radius: 999px;
+  font-size: 0.8rem;
 }
 
 .header-nav {

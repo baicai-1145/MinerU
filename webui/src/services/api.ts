@@ -2,7 +2,7 @@ import axios from 'axios';
 import { resolveApiBase } from '@/config';
 import { getSessionId, getUserId } from '@/utils/session';
 
-const client = axios.create({
+export const client = axios.create({
   timeout: 120000
 });
 

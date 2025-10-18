@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Mapping
 from loguru import logger
 from base64 import b64encode
 from ipaddress import ip_address
+from pydantic import BaseModel, Field
 
 from mineru.cli.common import aio_do_parse, read_fn, pdf_suffixes, image_suffixes
 from mineru.utils.cli_parser import arg_parse
@@ -31,6 +32,7 @@ from mineru.web.task_service import (
     build_env_overrides,
     temporary_environ,
 )
+from mineru.web.user_service import UserStore, UserAlreadyExists, InvalidCredentials
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -47,6 +49,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 task_manager = TaskManager()
+users_file = Path(os.getenv("MINERU_USERS_FILE", "./output/users.json"))
+user_store = UserStore(users_file)
 
 
 def sanitize_filename(filename: str) -> str:
@@ -149,7 +153,11 @@ def _resolve_scope_and_persistence(
     user_id: Optional[str],
 ) -> tuple[str, bool]:
     if user_id:
-        return f"user_{_sanitize_scope(user_id)}", True
+        candidate = user_id.strip()
+        if candidate:
+            record = user_store.get_user_by_id_sync(candidate)
+            if record is not None:
+                return f"user_{_sanitize_scope(record.user_id)}", True
     if session_id:
         return f"sess_{_sanitize_scope(session_id)}", False
     ip_value = _first_hop_ip(headers, client_host)
@@ -217,6 +225,15 @@ def _resolve_advanced_settings(config: Dict[str, Any]) -> AdvancedSettings:
     )
 
 
+class AuthPayload(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+def _normalize_username(value: str) -> str:
+    return value.strip()
+
+
 async def _store_task_uploads(
     task_id: str,
     files: List[UploadFile],
@@ -275,6 +292,28 @@ async def read_settings() -> Dict[str, Any]:
         **asdict(advanced),
         "default_language": config.get("language", "ch"),
     }
+
+
+@app.post("/auth/register")
+async def register_user(payload: AuthPayload):
+    username = _normalize_username(payload.username)
+    try:
+        record = await user_store.register_user(username, payload.password)
+    except UserAlreadyExists:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"user_id": record.user_id, "username": record.username}
+
+
+@app.post("/auth/login")
+async def login_user(payload: AuthPayload):
+    username = _normalize_username(payload.username)
+    try:
+        record = await user_store.authenticate_user(username, payload.password)
+    except InvalidCredentials:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    return {"user_id": record.user_id, "username": record.username}
 
 
 @app.post("/tasks", status_code=202)

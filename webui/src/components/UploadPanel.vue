@@ -2,6 +2,15 @@
   <div class="panel">
     <h2 class="panel-title">上传文档</h2>
     <div class="panel-body">
+      <p class="session-note">
+        <template v-if="isLoggedIn">
+          已登录用户的任务会长期保存，欢迎你，{{ username }}。
+        </template>
+        <template v-else>
+          未登录任务将在 7 天后自动清理。
+          <button type="button" class="link" @click="openAuth">登录 / 注册</button>
+        </template>
+      </p>
       <label class="upload-box" @dragover.prevent @drop.prevent="onDrop">
         <input ref="inputRef" type="file" multiple accept=".pdf,.png,.jpg,.jpeg" @change="onSelect" />
         <span>拖拽或点击上传 PDF / 图片</span>
@@ -96,8 +105,10 @@ import { computed, onMounted, ref } from 'vue';
 import { useUiStore } from '@/stores/uiStore';
 import { fetchSettings } from '@/services/api';
 import type { CreateTaskPayload } from '@/services/api';
+import { useAuthStore } from '@/stores/authStore';
 
 const uiStore = useUiStore();
+const authStore = useAuthStore();
 const inputRef = ref<HTMLInputElement | null>(null);
 const files = ref<File[]>([]);
 const showAdvanced = ref(false);
@@ -132,6 +143,8 @@ const emit = defineEmits<{
 }>();
 
 const isUploading = computed(() => uiStore.isUploading);
+const isLoggedIn = computed(() => authStore.isLoggedIn);
+const username = computed(() => authStore.username ?? '');
 
 async function loadSettings() {
   try {
@@ -157,6 +170,10 @@ onMounted(() => {
 
 function toggleAdvanced() {
   showAdvanced.value = !showAdvanced.value;
+}
+
+function openAuth() {
+  authStore.open('login');
 }
 
 function onSelect(event: Event) {
@@ -229,6 +246,24 @@ function formatSize(size: number): string {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.session-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.session-note .link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
 }
 
 .panel-title {

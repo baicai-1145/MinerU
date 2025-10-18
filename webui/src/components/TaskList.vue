@@ -18,6 +18,7 @@
         <div class="task-card__meta">
           <span>后端: {{ task.backend }}</span>
           <span>方法: {{ task.parse_method }}</span>
+          <span>{{ retentionLabel(task) }}</span>
         </div>
         <div class="task-card__time">
           <span>开始于 {{ formatTime(task.created_at) }}</span>
@@ -32,6 +33,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useTaskStore } from '@/stores/taskStore';
+import type { TaskSummary } from '@/stores/taskStore';
 
 defineEmits<{
   (e: 'select', taskId: string): void;
@@ -60,6 +62,10 @@ function statusLabel(status: string) {
 
 function formatTime(value: string) {
   return new Date(value).toLocaleString();
+}
+
+function retentionLabel(task: TaskSummary) {
+  return task.persistent ? '保存: 永久' : '保存: 7 天';
 }
 </script>
 
