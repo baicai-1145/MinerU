@@ -14,9 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 from loguru import logger
 from base64 import b64encode
+from ipaddress import ip_address
 
 from mineru.cli.common import aio_do_parse, read_fn, pdf_suffixes, image_suffixes
 from mineru.utils.cli_parser import arg_parse
@@ -103,14 +104,35 @@ class AdvancedSettings:
     server_url: Optional[str]
 
 
-def _first_hop_ip(forwarded_for: Optional[str], client_host: Optional[str], cf_ip: Optional[str] = None) -> str:
-    for raw in (forwarded_for, cf_ip):
-        if raw:
-            candidate = raw.split(",")[0].strip()
-            if candidate:
-                return candidate
-    if client_host:
-        return client_host
+def _extract_client_ip(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts:
+        return None
+    for part in parts:
+        try:
+            ip_obj = ip_address(part)
+            if not (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved or ip_obj.is_unspecified):
+                return part
+        except ValueError:
+            continue
+    return parts[0]
+
+
+def _first_hop_ip(headers: Mapping[str, str], client_host: Optional[str]) -> str:
+    for raw in (
+        headers.get("x-forwarded-for"),
+        headers.get("cf-connecting-ip"),
+        headers.get("true-client-ip"),
+        headers.get("x-real-ip"),
+    ):
+        candidate = _extract_client_ip(raw)
+        if candidate:
+            return candidate
+    candidate = _extract_client_ip(client_host)
+    if candidate:
+        return candidate
     return "unknown"
 
 
@@ -123,9 +145,8 @@ def _sanitize_scope(raw: str) -> str:
 def _resolve_user_scope(request: Request) -> str:
     return _sanitize_scope(
         _first_hop_ip(
-            request.headers.get("x-forwarded-for"),
+            request.headers,
             request.client.host if request.client else None,
-            request.headers.get("cf-connecting-ip"),
         )
     )
 
@@ -133,9 +154,8 @@ def _resolve_user_scope(request: Request) -> str:
 def _resolve_scope_from_websocket(websocket: WebSocket) -> str:
     return _sanitize_scope(
         _first_hop_ip(
-            websocket.headers.get("x-forwarded-for"),
+            websocket.headers,
             websocket.client.host if websocket.client else None,
-            websocket.headers.get("cf-connecting-ip"),
         )
     )
 
