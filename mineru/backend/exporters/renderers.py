@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
-from bs4 import BeautifulSoup  # type: ignore[import]
+from bs4 import BeautifulSoup, Tag  # type: ignore[import]
 from docx import Document  # type: ignore[import]
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT  # type: ignore[import]
 from docx.shared import Inches  # type: ignore[import]
@@ -550,12 +550,42 @@ def content_list_to_docx(
         soup = BeautifulSoup(table_html, "html.parser")
         rows = soup.find_all("tr")
         if rows:
-          doc_table = document.add_table(rows=len(rows), cols=len(rows[0].find_all(["td", "th"])))
+          def _safe_span(cell: Tag) -> int:
+            raw = cell.get("colspan", 1)
+            try:
+              value = int(raw)
+            except (ValueError, TypeError):
+              return 1
+            return max(1, value)
+
+          col_counts = [
+            sum(_safe_span(cell) for cell in row.find_all(["td", "th"]))
+            for row in rows
+          ]
+          col_count = max(col_counts) if col_counts else 0
+          if col_count <= 0:
+            col_count = 1
+          doc_table = document.add_table(rows=len(rows), cols=col_count)
           doc_table.style = "Light List Accent 1"
           for r_idx, row in enumerate(rows):
             cells = row.find_all(["td", "th"])
-            for c_idx, cell in enumerate(cells):
-              doc_table.rows[r_idx].cells[c_idx].text = _html_to_plain_text(cell.decode_contents()).strip()
+            if not cells:
+              continue
+            col_idx = 0
+            for cell in cells:
+              span = _safe_span(cell)
+              if col_idx >= col_count:
+                break
+              doc_cell = doc_table.rows[r_idx].cells[col_idx]
+              for offset in range(1, span):
+                if col_idx + offset >= col_count:
+                  break
+                doc_cell = doc_cell.merge(doc_table.rows[r_idx].cells[col_idx + offset])
+              doc_cell.text = _html_to_plain_text(cell.decode_contents()).strip()
+              col_idx += span
+            while col_idx < col_count:
+              doc_table.rows[r_idx].cells[col_idx].text = ""
+              col_idx += 1
       elif item.get("img_path"):
         asset = image_loader(item["img_path"])
         if asset:
