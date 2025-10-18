@@ -15,10 +15,13 @@ import os
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+import os
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 
 from loguru import logger
 
@@ -117,6 +120,8 @@ class TaskManager:
         self._lock = asyncio.Lock()
         self._env_lock = ENV_LOCK
         self._listeners: Dict[str, List[asyncio.Queue[Dict[str, Any]]]] = defaultdict(list)
+        self._tasks_root = Path(os.getenv("MINERU_TASKS_ROOT", "./output/tasks"))
+        self._load_existing_tasks()
 
     async def create_task(
         self,
@@ -157,11 +162,113 @@ class TaskManager:
                     "timestamp": record.updated_at.isoformat(),
                 },
             )
+            self._persist_task(record)
 
         loop = asyncio.get_running_loop()
         loop.create_task(self._run_task(record))
 
         return record
+
+    def _metadata_path(self, record: TaskRecord) -> Path:
+        return record.work_dir / "task.json"
+
+    def _persist_task(self, record: TaskRecord) -> None:
+        metadata = {
+            "task_id": record.task_id,
+            "status": record.status.value,
+            "error": record.error,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+            "params": asdict(record.params),
+            "uploads": [
+                {
+                    "original_name": upload.original_name,
+                    "stored_name": upload.stored_name,
+                    "stored_path": str(upload.stored_path),
+                    "language": upload.language,
+                }
+                for upload in record.uploads
+            ],
+            "work_dir": str(record.work_dir),
+            "artifacts_dir": str(record.artifacts_dir),
+            "logs_dir": str(record.logs_dir),
+            "config": record.config,
+        }
+
+        path = self._metadata_path(record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with tmp_path.open("w", encoding="utf-8") as fp:
+            json.dump(metadata, fp, ensure_ascii=False, indent=2)
+        tmp_path.replace(path)
+
+    def _load_existing_tasks(self) -> None:
+        root = self._tasks_root
+        if not root.exists() or not root.is_dir():
+            return
+
+        for task_dir in root.iterdir():
+            if not task_dir.is_dir():
+                continue
+            metadata_path = task_dir / "task.json"
+            if not metadata_path.exists():
+                continue
+            try:
+                with metadata_path.open("r", encoding="utf-8") as fp:
+                    metadata = json.load(fp)
+                record = self._record_from_metadata(metadata)
+                if record is None:
+                    continue
+                if record.status in (TaskStatus.RUNNING, TaskStatus.QUEUED):
+                    record.status = TaskStatus.FAILED
+                    record.error = "task interrupted by service restart"
+                    record.touch()
+                    self._persist_task(record)
+                self._tasks[record.task_id] = record
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning(f"failed to load task metadata from {metadata_path}: {exc}")
+
+    def _record_from_metadata(self, metadata: Dict[str, Any]) -> Optional[TaskRecord]:
+        try:
+            params = TaskParams(**metadata.get("params", {}))
+            uploads_data = metadata.get("uploads", [])
+            uploads: List[TaskUpload] = []
+            for item in uploads_data:
+                uploads.append(
+                    TaskUpload(
+                        original_name=item.get("original_name", ""),
+                        stored_name=item.get("stored_name", ""),
+                        stored_path=Path(item.get("stored_path", "")),
+                        language=item.get("language", "ch"),
+                    )
+                )
+            record = TaskRecord(
+                task_id=metadata["task_id"],
+                uploads=uploads,
+                params=params,
+                work_dir=Path(metadata["work_dir"]),
+                artifacts_dir=Path(metadata["artifacts_dir"]),
+                logs_dir=Path(metadata["logs_dir"]),
+                status=TaskStatus(metadata.get("status", "queued")),
+                error=metadata.get("error"),
+                config=metadata.get("config", {}),
+                created_at=datetime.fromisoformat(metadata.get("created_at")),
+                updated_at=datetime.fromisoformat(metadata.get("updated_at")),
+            )
+
+            log_path = record.logs_dir / "task.log"
+            if log_path.exists():
+                try:
+                    lines = log_path.read_text(encoding="utf-8").splitlines()
+                    for line in lines[-record.logs.maxlen:]:
+                        record.logs.append(line)
+                except Exception:
+                    pass
+
+            return record
+        except Exception as exc:
+            logger.warning(f"failed to reconstruct task from metadata: {exc}")
+            return None
 
     async def retry_task(self, task_id: str) -> TaskRecord:
         async with self._lock:
@@ -186,6 +293,7 @@ class TaskManager:
                     "timestamp": record.updated_at.isoformat(),
                 },
             )
+            self._persist_task(record)
 
         loop = asyncio.get_running_loop()
         loop.create_task(self._run_task(record))
@@ -286,6 +394,7 @@ class TaskManager:
                     "timestamp": record.updated_at.isoformat(),
                 },
             )
+            self._persist_task(record)
 
     async def _handle_failure(self, task_id: str, message: str) -> None:
         async with self._lock:
@@ -303,6 +412,7 @@ class TaskManager:
                     "timestamp": record.updated_at.isoformat(),
                 },
             )
+            self._persist_task(record)
 
     def _log(self, record: TaskRecord, message: str) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
