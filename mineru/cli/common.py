@@ -198,8 +198,12 @@ def _process_output(
 
     if f_dump_docx:
         content_list = ensure_content_list()
-        docx_bytes = content_list_to_docx(content_list, load_image_asset)
-        md_writer.write(f"{pdf_file_name}.docx", docx_bytes)
+        try:
+            docx_bytes = content_list_to_docx(content_list, load_image_asset)
+        except Exception as exc:
+            logger.warning(f"docx export failed for {pdf_file_name}: {exc}")
+        else:
+            md_writer.write(f"{pdf_file_name}.docx", docx_bytes)
 
     if f_dump_latex:
         content_list = ensure_content_list()
