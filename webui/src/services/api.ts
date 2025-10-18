@@ -1,14 +1,21 @@
 import axios from 'axios';
-
-const rawBase =
-  import.meta.env.VITE_MINERU_API_BASE ??
-  (typeof window !== 'undefined' ? window.location.origin : '');
-
-const baseURL = rawBase ? rawBase.replace(/\/$/, '') : undefined;
+import { resolveApiBase } from '@/config';
 
 const client = axios.create({
-  baseURL,
   timeout: 120000
+});
+
+const initialBase = resolveApiBase();
+if (initialBase) {
+  client.defaults.baseURL = initialBase;
+}
+
+client.interceptors.request.use(config => {
+  const base = resolveApiBase();
+  if (base) {
+    config.baseURL = base;
+  }
+  return config;
 });
 
 export interface CreateTaskPayload {
@@ -87,13 +94,13 @@ export async function fetchTask(taskId: string, includeContent = true) {
 }
 
 export function getArtifactUrl(taskId: string, relativePath: string) {
-  const base = client.defaults.baseURL ?? '';
+  const base = resolveApiBase() ?? '';
   const formatted = relativePath.replace(/^\//, '');
   return `${base}/tasks/${taskId}/artifacts/${formatted}`;
 }
 
 export function getArtifactDataUrl(taskId: string, relativePath: string) {
-  const base = client.defaults.baseURL ?? '';
+  const base = resolveApiBase() ?? '';
   const formatted = relativePath.replace(/^\//, '');
   const encoded = encodeURIComponent(formatted);
   return `${base}/tasks/${taskId}/artifact-bytes?path=${encoded}`;

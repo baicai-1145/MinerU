@@ -1,3 +1,5 @@
+import { resolveApiBase } from '@/config';
+
 export type TaskEvent =
   | { event: 'snapshot'; task: unknown }
   | { event: 'status'; task_id: string; status: string; timestamp: string }
@@ -17,10 +19,9 @@ export class TaskWebSocket {
   constructor(baseUrl?: string) {
     if (baseUrl) {
       this.baseUrl = baseUrl.replace(/\/$/, '');
-    } else if (typeof window !== 'undefined') {
-      this.baseUrl = window.location.origin.replace(/\/$/, '');
     } else {
-      this.baseUrl = 'http://127.0.0.1:8000';
+      const resolved = resolveApiBase() ?? (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8000');
+      this.baseUrl = resolved.replace(/\/$/, '');
     }
   }
 

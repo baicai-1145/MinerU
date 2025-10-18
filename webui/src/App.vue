@@ -40,10 +40,11 @@ import { createTask, fetchTask, fetchTasks, retryTask } from '@/services/api';
 import type { CreateTaskPayload } from '@/services/api';
 import { TaskWebSocket } from '@/services/websocket';
 import { computed, onMounted, onBeforeUnmount, watch, ref } from 'vue';
+import { appConfig } from '@/config';
 
 const taskStore = useTaskStore();
 const uiStore = useUiStore();
-const socket = new TaskWebSocket(import.meta.env.VITE_MINERU_API_BASE);
+const socket = new TaskWebSocket(appConfig.apiBase);
 const errorMessage = computed(() => uiStore.errorMessage);
 const theme = ref(localStorage.getItem('mineru-webui-theme') ?? 'light');
 const themeLabel = computed(() => (theme.value === 'dark' ? '亮色模式' : '暗色模式'));
