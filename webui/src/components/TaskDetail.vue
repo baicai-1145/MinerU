@@ -76,7 +76,7 @@ import { useTaskStore } from '@/stores/taskStore';
 import { useUiStore } from '@/stores/uiStore';
 import LogViewer from './LogViewer.vue';
 import ResultPreview from './ResultPreview.vue';
-import { getArtifactUrl } from '@/services/api';
+import { getArtifactUrl, getArtifactDataUrl } from '@/services/api';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -265,8 +265,8 @@ async function fetchArtifactBlob(path: string): Promise<Blob> {
   if (!currentTask.value) {
     throw new Error('任务未找到');
   }
-  const url = getArtifactUrl(currentTask.value.task_id, path);
-  const response = await fetch(url, { credentials: 'include' });
+  const url = getArtifactDataUrl(currentTask.value.task_id, path);
+  const response = await fetch(url, { credentials: 'omit' });
   if (!response.ok) {
     throw new Error(`拉取资源失败: ${response.status}`);
   }
@@ -363,14 +363,19 @@ async function fetchImageBlob(src: string): Promise<Blob> {
   const isAbsolute = /^https?:\/\//i.test(src);
   if (!isAbsolute) {
     const artifactPath = resolveArtifactPath(src);
-    return fetchArtifactBlob(artifactPath);
+    const dataUrl = getArtifactDataUrl(taskId, artifactPath);
+    const response = await fetch(dataUrl, { credentials: 'omit' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.blob();
   }
 
   const artifactMatch = src.match(/\/tasks\/([^/]+)\/artifacts\/(.+)$/);
   if (artifactMatch) {
     const [, remoteTaskId, encodedPath] = artifactMatch;
     if (!remoteTaskId || remoteTaskId !== taskId) {
-      const response = await fetch(src, { credentials: 'include' });
+      const response = await fetch(src, { credentials: 'omit' });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
@@ -380,7 +385,7 @@ async function fetchImageBlob(src: string): Promise<Blob> {
     return fetchArtifactBlob(artifactPath);
   }
 
-  const response = await fetch(src, { credentials: 'include' });
+  const response = await fetch(src, { credentials: 'omit' });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }

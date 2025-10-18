@@ -249,7 +249,7 @@ async function loadPdf() {
   pdfData.value = null;
 
   try {
-    const response = await fetch(url, { credentials: 'include', signal: controller.signal });
+    const response = await fetch(url, { credentials: 'omit', signal: controller.signal });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }

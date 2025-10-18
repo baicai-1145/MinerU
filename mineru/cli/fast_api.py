@@ -103,14 +103,14 @@ class AdvancedSettings:
     server_url: Optional[str]
 
 
-def _first_hop_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        candidate = forwarded_for.split(",")[0].strip()
-        if candidate:
-            return candidate
-    if request.client and request.client.host:
-        return request.client.host
+def _first_hop_ip(forwarded_for: Optional[str], client_host: Optional[str], cf_ip: Optional[str] = None) -> str:
+    for raw in (forwarded_for, cf_ip):
+        if raw:
+            candidate = raw.split(",")[0].strip()
+            if candidate:
+                return candidate
+    if client_host:
+        return client_host
     return "unknown"
 
 
@@ -121,7 +121,23 @@ def _sanitize_scope(raw: str) -> str:
 
 
 def _resolve_user_scope(request: Request) -> str:
-    return _sanitize_scope(_first_hop_ip(request))
+    return _sanitize_scope(
+        _first_hop_ip(
+            request.headers.get("x-forwarded-for"),
+            request.client.host if request.client else None,
+            request.headers.get("cf-connecting-ip"),
+        )
+    )
+
+
+def _resolve_scope_from_websocket(websocket: WebSocket) -> str:
+    return _sanitize_scope(
+        _first_hop_ip(
+            websocket.headers.get("x-forwarded-for"),
+            websocket.client.host if websocket.client else None,
+            websocket.headers.get("cf-connecting-ip"),
+        )
+    )
 
 
 def _resolve_virtual_vram(config: Dict[str, Any]) -> Optional[int]:
@@ -202,8 +218,9 @@ async def _store_task_uploads(
 
 
 @app.get("/tasks")
-async def list_tasks():
-    summaries = await task_manager.list_tasks()
+async def list_tasks(request: Request):
+    scope = _resolve_user_scope(request)
+    summaries = await task_manager.list_tasks(scope=scope)
     return {"tasks": summaries}
 
 
@@ -296,16 +313,19 @@ async def create_task(
         base_output=base_output,
         config=task_config,
     )
-    payload = await task_manager.get_task_payload(task_id, include_content=False)
+    payload = await task_manager.get_task_payload(task_id, include_content=False, scope=user_scope)
     return payload
 
 
 @app.get("/tasks/{task_id}")
-async def get_task(task_id: str, include_content: bool = True):
+async def get_task(request: Request, task_id: str, include_content: bool = True):
+    scope = _resolve_user_scope(request)
     try:
-        payload = await task_manager.get_task_payload(task_id, include_content=include_content)
+        payload = await task_manager.get_task_payload(task_id, include_content=include_content, scope=scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="task not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="forbidden")
     return payload
 
 
@@ -324,12 +344,15 @@ def apply_cors_headers(response, request: Request):
 
 @app.api_route("/tasks/{task_id}/artifacts/{artifact_path:path}", methods=["GET", "HEAD"])
 async def download_artifact(request: Request, task_id: str, artifact_path: str):
+    scope = _resolve_user_scope(request)
     try:
-        resolved = await task_manager.resolve_artifact(task_id, artifact_path)
+        resolved = await task_manager.resolve_artifact(task_id, artifact_path, scope=scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="task not found")
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid artifact path")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="forbidden")
 
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="file not found")
@@ -343,12 +366,15 @@ async def download_artifact_bytes(
         task_id: str,
         path: str = Query(..., description="Artifact relative path within task workdir"),
 ):
+    scope = _resolve_user_scope(request)
     try:
-        resolved = await task_manager.resolve_artifact(task_id, path)
+        resolved = await task_manager.resolve_artifact(task_id, path, scope=scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="task not found")
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid artifact path")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="forbidden")
 
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="file not found")
@@ -369,18 +395,25 @@ async def download_artifact_bytes(
 @app.websocket("/ws/tasks/{task_id}")
 async def task_stream(websocket: WebSocket, task_id: str):
     await websocket.accept()
+    scope = _resolve_scope_from_websocket(websocket)
     try:
-        snapshot = await task_manager.get_task_payload(task_id, include_content=True)
+        snapshot = await task_manager.get_task_payload(task_id, include_content=True, scope=scope)
     except KeyError:
         await websocket.close(code=4404)
+        return
+    except PermissionError:
+        await websocket.close(code=4403)
         return
 
     await websocket.send_json({"event": "snapshot", "task": snapshot})
 
     try:
-        queue = await task_manager.add_listener(task_id)
+        queue = await task_manager.add_listener(task_id, scope=scope)
     except KeyError:
         await websocket.close(code=4404)
+        return
+    except PermissionError:
+        await websocket.close(code=4403)
         return
 
     try:
@@ -396,15 +429,18 @@ async def task_stream(websocket: WebSocket, task_id: str):
 
 
 @app.post("/tasks/{task_id}/retry", status_code=202)
-async def retry_task(task_id: str):
+async def retry_task(request: Request, task_id: str):
+    scope = _resolve_user_scope(request)
     try:
-        await task_manager.retry_task(task_id)
-        payload = await task_manager.get_task_payload(task_id, include_content=False)
+        await task_manager.retry_task(task_id, scope=scope)
+        payload = await task_manager.get_task_payload(task_id, include_content=False, scope=scope)
         return payload
     except KeyError:
         raise HTTPException(status_code=404, detail="task not found")
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="forbidden")
 
 
 @app.post(path="/file_parse",)

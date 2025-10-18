@@ -271,11 +271,13 @@ class TaskManager:
             logger.warning(f"failed to reconstruct task from metadata: {exc}")
             return None
 
-    async def retry_task(self, task_id: str) -> TaskRecord:
+    async def retry_task(self, task_id: str, *, scope: Optional[str] = None) -> TaskRecord:
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
                 raise KeyError(task_id)
+            if scope and record.user_scope != scope:
+                raise PermissionError(task_id)
             if record.status in (TaskStatus.QUEUED, TaskStatus.RUNNING):
                 raise RuntimeError("task is currently running or queued")
 
@@ -431,26 +433,32 @@ class TaskManager:
             },
         )
 
-    async def get_task(self, task_id: str) -> TaskRecord:
+    async def get_task(self, task_id: str, *, scope: Optional[str] = None) -> TaskRecord:
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
                 raise KeyError(task_id)
+            if scope and record.user_scope != scope:
+                raise PermissionError(task_id)
             return record
 
-    async def list_tasks(self) -> List[Dict[str, Any]]:
+    async def list_tasks(self, *, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return lightweight summaries for all tasks."""
         async with self._lock:
-            return [record.to_dict() for record in self._tasks.values()]
+            records = list(self._tasks.values())
+            if scope is not None:
+                records = [record for record in records if record.user_scope == scope]
+            return [record.to_dict() for record in records]
 
     async def get_task_payload(
         self,
         task_id: str,
         *,
         include_content: bool = True,
+        scope: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a response payload with summaries and previews."""
-        record = await self.get_task(task_id)
+        record = await self.get_task(task_id, scope=scope)
 
         result = record.to_dict()
         result["params"] = asdict(record.params)
@@ -594,19 +602,22 @@ class TaskManager:
             logger.warning("failed to parse json file %s", path)
             return None
 
-    async def resolve_artifact(self, task_id: str, relative_path: str) -> Path:
+    async def resolve_artifact(self, task_id: str, relative_path: str, *, scope: Optional[str] = None) -> Path:
         """Return an absolute path to an artifact ensuring sandbox safety."""
-        record = await self.get_task(task_id)
+        record = await self.get_task(task_id, scope=scope)
         candidate = (record.work_dir / relative_path).resolve()
         if not str(candidate).startswith(str(record.work_dir.resolve())):
             raise ValueError("invalid artifact path")
         return candidate
 
-    async def add_listener(self, task_id: str) -> asyncio.Queue[Dict[str, Any]]:
+    async def add_listener(self, task_id: str, *, scope: Optional[str] = None) -> asyncio.Queue[Dict[str, Any]]:
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=200)
         async with self._lock:
-            if task_id not in self._tasks:
+            record = self._tasks.get(task_id)
+            if record is None:
                 raise KeyError(task_id)
+            if scope and record.user_scope != scope:
+                raise PermissionError(task_id)
             self._listeners[task_id].append(queue)
         return queue
 
