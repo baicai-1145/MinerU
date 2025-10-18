@@ -9,6 +9,7 @@ export interface TaskSummary {
   created_at: string;
   updated_at: string;
   error?: string | null;
+  persistent?: boolean;
 }
 
 export interface TaskDetail extends TaskSummary {

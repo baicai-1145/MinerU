@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-import os
-import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -29,6 +28,7 @@ from mineru.cli.common import aio_do_parse, read_fn
 from mineru.utils.config_reader import get_device
 
 ENV_LOCK = asyncio.Lock()
+ANON_TASK_TTL_DAYS = int(os.getenv("MINERU_ANON_TASK_TTL_DAYS", "7"))
 
 
 class TaskStatus(str, Enum):
@@ -96,6 +96,7 @@ class TaskRecord:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=200))
+    persistent: bool = False
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)
@@ -111,6 +112,7 @@ class TaskRecord:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "error": self.error,
+            "persistent": self.persistent,
         }
 
 
@@ -133,6 +135,7 @@ class TaskManager:
         params: TaskParams,
         base_output: Path,
         config: Optional[Dict[str, Any]] = None,
+        persistent: bool = False,
     ) -> TaskRecord:
         """Register a new task and schedule execution."""
         config = config or {}
@@ -152,9 +155,11 @@ class TaskManager:
             artifacts_dir=artifacts_dir,
             logs_dir=logs_dir,
             config=config,
+            persistent=persistent,
         )
 
         async with self._lock:
+            self._cleanup_expired_tasks()
             self._tasks[task_id] = record
             self._log(record, f"task queued with {len(uploads)} file(s)")
             self._broadcast(
@@ -198,6 +203,7 @@ class TaskManager:
             "artifacts_dir": str(record.artifacts_dir),
             "logs_dir": str(record.logs_dir),
             "config": record.config,
+            "persistent": record.persistent,
         }
 
         path = self._metadata_path(record)
@@ -228,6 +234,27 @@ class TaskManager:
             except Exception as exc:  # pragma: no cover - best effort
                 logger.warning(f"failed to load task metadata from {metadata_path}: {exc}")
 
+        self._cleanup_expired_tasks()
+
+    def _cleanup_expired_tasks(self) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ANON_TASK_TTL_DAYS)
+        expired_ids = [
+            task_id
+            for task_id, record in list(self._tasks.items())
+            if not record.persistent and record.created_at < cutoff
+        ]
+        for task_id in expired_ids:
+            record = self._tasks.pop(task_id, None)
+            if record is None:
+                continue
+            self._listeners.pop(task_id, None)
+            logger.info("cleanup expired task %s created at %s", task_id, record.created_at.isoformat())
+            try:
+                shutil.rmtree(record.work_dir, ignore_errors=True)
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning(f"failed to cleanup workdir for expired task {task_id}: {exc}")
+
+
     def _record_from_metadata(self, metadata: Dict[str, Any]) -> Optional[TaskRecord]:
         try:
             params = TaskParams(**metadata.get("params", {}))
@@ -255,6 +282,7 @@ class TaskManager:
                 config=metadata.get("config", {}),
                 created_at=datetime.fromisoformat(metadata.get("created_at")),
                 updated_at=datetime.fromisoformat(metadata.get("updated_at")),
+                persistent=metadata.get("persistent", False),
             )
 
             log_path = record.logs_dir / "task.log"
@@ -273,6 +301,7 @@ class TaskManager:
 
     async def retry_task(self, task_id: str, *, scope: Optional[str] = None) -> TaskRecord:
         async with self._lock:
+            self._cleanup_expired_tasks()
             record = self._tasks.get(task_id)
             if record is None:
                 raise KeyError(task_id)
@@ -435,6 +464,7 @@ class TaskManager:
 
     async def get_task(self, task_id: str, *, scope: Optional[str] = None) -> TaskRecord:
         async with self._lock:
+            self._cleanup_expired_tasks()
             record = self._tasks.get(task_id)
             if record is None:
                 raise KeyError(task_id)
@@ -445,6 +475,7 @@ class TaskManager:
     async def list_tasks(self, *, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return lightweight summaries for all tasks."""
         async with self._lock:
+            self._cleanup_expired_tasks()
             records = list(self._tasks.values())
             if scope is not None:
                 records = [record for record in records if record.user_scope == scope]

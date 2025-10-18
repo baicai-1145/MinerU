@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { resolveApiBase } from '@/config';
+import { getSessionId, getUserId } from '@/utils/session';
 
 const client = axios.create({
   timeout: 120000
@@ -15,8 +16,36 @@ client.interceptors.request.use(config => {
   if (base) {
     config.baseURL = base;
   }
+  const headers = config.headers ?? (config.headers = {});
+  const sessionId = getSessionId();
+  if (sessionId) {
+    headers['X-Mineru-Session'] = sessionId;
+  }
+  const userId = getUserId();
+  if (userId) {
+    headers['X-Mineru-User'] = userId;
+  }
   return config;
 });
+
+function appendScopeParams(url: string): string {
+  const sessionId = getSessionId();
+  const userId = getUserId();
+  const [path, query] = url.split('?', 2);
+  const params = new URLSearchParams(query ?? '');
+  if (sessionId) {
+    params.set('session', sessionId);
+  } else {
+    params.delete('session');
+  }
+  if (userId) {
+    params.set('user', userId);
+  } else {
+    params.delete('user');
+  }
+  const queryString = params.toString();
+  return queryString ? `${path}?${queryString}` : path;
+}
 
 export interface CreateTaskPayload {
   files: File[];
@@ -96,14 +125,14 @@ export async function fetchTask(taskId: string, includeContent = true) {
 export function getArtifactUrl(taskId: string, relativePath: string) {
   const base = resolveApiBase() ?? '';
   const formatted = relativePath.replace(/^\//, '');
-  return `${base}/tasks/${taskId}/artifacts/${formatted}`;
+  return appendScopeParams(`${base}/tasks/${taskId}/artifacts/${formatted}`);
 }
 
 export function getArtifactDataUrl(taskId: string, relativePath: string) {
   const base = resolveApiBase() ?? '';
   const formatted = relativePath.replace(/^\//, '');
   const encoded = encodeURIComponent(formatted);
-  return `${base}/tasks/${taskId}/artifact-bytes?path=${encoded}`;
+  return appendScopeParams(`${base}/tasks/${taskId}/artifact-bytes?path=${encoded}`);
 }
 
 export async function retryTask(taskId: string) {

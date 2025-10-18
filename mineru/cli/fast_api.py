@@ -142,21 +142,44 @@ def _sanitize_scope(raw: str) -> str:
     return scope[:64]
 
 
-def _resolve_user_scope(request: Request) -> str:
-    return _sanitize_scope(
-        _first_hop_ip(
-            request.headers,
-            request.client.host if request.client else None,
-        )
+def _resolve_scope_and_persistence(
+    headers: Mapping[str, str],
+    client_host: Optional[str],
+    session_id: Optional[str],
+    user_id: Optional[str],
+) -> tuple[str, bool]:
+    if user_id:
+        return f"user_{_sanitize_scope(user_id)}", True
+    if session_id:
+        return f"sess_{_sanitize_scope(session_id)}", False
+    ip_value = _first_hop_ip(headers, client_host)
+    return f"ip_{_sanitize_scope(ip_value)}", False
+
+
+def _resolve_request_scope(request: Request) -> tuple[str, bool]:
+    session_id = request.headers.get("x-mineru-session") or request.query_params.get("session")
+    user_id = request.headers.get("x-mineru-user") or request.query_params.get("user")
+    return _resolve_scope_and_persistence(
+        request.headers,
+        request.client.host if request.client else None,
+        session_id,
+        user_id,
     )
 
 
-def _resolve_scope_from_websocket(websocket: WebSocket) -> str:
-    return _sanitize_scope(
-        _first_hop_ip(
-            websocket.headers,
-            websocket.client.host if websocket.client else None,
-        )
+def _resolve_user_scope(request: Request) -> str:
+    scope, _ = _resolve_request_scope(request)
+    return scope
+
+
+def _resolve_scope_from_websocket(websocket: WebSocket) -> tuple[str, bool]:
+    session_id = websocket.query_params.get("session") or websocket.headers.get("x-mineru-session")
+    user_id = websocket.query_params.get("user") or websocket.headers.get("x-mineru-user")
+    return _resolve_scope_and_persistence(
+        websocket.headers,
+        websocket.client.host if websocket.client else None,
+        session_id,
+        user_id,
     )
 
 
@@ -298,7 +321,7 @@ async def create_task(
     base_output = Path(output_dir)
     base_output.mkdir(parents=True, exist_ok=True)
 
-    user_scope = _resolve_user_scope(request)
+    user_scope, is_persistent = _resolve_request_scope(request)
     normalised_lang_list = _normalise_lang_list(lang_list, len(files))
     uploads = await _store_task_uploads(task_id, files, user_scope, base_output, normalised_lang_list)
     task_config.setdefault("user_scope", user_scope)
@@ -332,6 +355,7 @@ async def create_task(
         params=params,
         base_output=base_output,
         config=task_config,
+        persistent=is_persistent,
     )
     payload = await task_manager.get_task_payload(task_id, include_content=False, scope=user_scope)
     return payload
@@ -415,7 +439,7 @@ async def download_artifact_bytes(
 @app.websocket("/ws/tasks/{task_id}")
 async def task_stream(websocket: WebSocket, task_id: str):
     await websocket.accept()
-    scope = _resolve_scope_from_websocket(websocket)
+    scope, _ = _resolve_scope_from_websocket(websocket)
     try:
         snapshot = await task_manager.get_task_payload(task_id, include_content=True, scope=scope)
     except KeyError:

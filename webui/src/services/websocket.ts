@@ -1,4 +1,5 @@
 import { resolveApiBase } from '@/config';
+import { getSessionId, getUserId } from '@/utils/session';
 
 export type TaskEvent =
   | { event: 'snapshot'; task: unknown }
@@ -29,7 +30,17 @@ export class TaskWebSocket {
     this.currentTaskId = taskId;
     const base = this.baseUrl.replace(/^http/, 'ws');
     const normalized = base.endsWith('/') ? base.slice(0, -1) : base;
-    const url = `${normalized}/ws/tasks/${taskId}`;
+    const params = new URLSearchParams();
+    const sessionId = getSessionId();
+    if (sessionId) {
+      params.set('session', sessionId);
+    }
+    const userId = getUserId();
+    if (userId) {
+      params.set('user', userId);
+    }
+    const query = params.toString();
+    const url = query ? `${normalized}/ws/tasks/${taskId}?${query}` : `${normalized}/ws/tasks/${taskId}`;
     this.socket = new WebSocket(url);
 
     this.socket.onmessage = event => {
