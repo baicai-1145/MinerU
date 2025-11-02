@@ -20,7 +20,7 @@ Options:
   -e, --end INTEGER               Ending page number for parsing (0-based)
   -f, --formula BOOLEAN           Enable formula parsing (default: enabled)
   -t, --table BOOLEAN             Enable table parsing (default: enabled)
-  -d, --device TEXT               Inference device (e.g., cpu/cuda/cuda:0/npu/mps, pipeline backend only)
+  -d, --device TEXT               Inference device (e.g., cpu/cuda/cuda:0/npu/mps, pipeline and vlm-transformers backend only)
   --vram INTEGER                  Maximum GPU VRAM usage per process (GB) (pipeline backend only)
   --source [huggingface|modelscope|local]
                                   Model source, default: huggingface
@@ -68,7 +68,7 @@ Here are the environment variables and their descriptions:
 - `MINERU_DEVICE_MODE`:
     * Used to specify inference device
     * supports device types like `cpu/cuda/cuda:0/npu/mps`
-    * only effective for `pipeline` backend.
+    * only effective for `pipeline` and `vlm-transformers` backends.
   
 - `MINERU_VIRTUAL_VRAM_SIZE`: 
     * Used to specify maximum GPU VRAM usage per process (GB)
@@ -87,6 +87,16 @@ Here are the environment variables and their descriptions:
     * Used to enable formula parsing
     * defaults to `true`, can be set to `false` through environment variables to disable formula parsing.
   
-- `MINERU_TABLE_ENABLE`: 
+- `MINERU_FORMULA_CH_SUPPORT`:
+    * Used to enable Chinese formula parsing optimization (experimental feature)
+    * Default is `false`, can be set to `true` via environment variable to enable Chinese formula parsing optimization.
+    * Only effective for `pipeline` backend.
+  
+- `MINERU_TABLE_ENABLE`:
     * Used to enable table parsing
-    * defaults to `true`, can be set to `false` through environment variables to disable table parsing.
+    * Default is `true`, can be set to `false` via environment variable to disable table parsing.
+
+- `MINERU_TABLE_MERGE_ENABLE`:
+    * Used to enable table merging functionality
+    * Default is `true`, can be set to `false` via environment variable to disable table merging functionality.
+

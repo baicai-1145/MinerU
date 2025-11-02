@@ -36,10 +36,10 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "fast-langdetect>=0.2.3,<0.3.0",
     "scikit-image>=0.25.0,<1.0.0",
-    "openai>=1.70.0,<2",
+    "openai>=1.70.0,<3",
     "beautifulsoup4>=4.13.5,<5",
     "magika>=0.6.2,<0.7.0",
-    "mineru-vl-utils>=0.1.11,<1",
+    "mineru-vl-utils>=0.1.15,<1",
     "python-docx>=1.1.2",
     "latex2mathml>=3.76.0",
     "lxml>=5.2.1",
@@ -63,7 +63,10 @@ vlm = [
     "accelerate>=1.5.1",
 ]
 vllm = [
-    "vllm>=0.10.1.1,<0.11",
+    "vllm>=0.10.1.1,<0.12",
+]
+mlx = [
+    "mlx-vlm>=0.3.3,<0.4",
 ]
 pipeline = [
     "matplotlib>=3.10,<4",
@@ -94,6 +97,7 @@ core = [
     "mineru[pipeline]",
     "mineru[api]",
     "mineru[gradio]",
+    "mineru[mlx] ; sys_platform == 'darwin'",
 ]
 all = [
     "mineru[core]",
@@ -122,7 +126,7 @@ namespaces = false
 
 [tool.setuptools.package-data]
 "mineru" = ["resources/**"]
-"mineru.model.ocr.paddleocr2pytorch.pytorchocr.utils" = ["resources/**"]
+"mineru.model.utils.pytorchocr.utils" = ["resources/**"]
 
 [tool.setuptools]
 include-package-data = true
