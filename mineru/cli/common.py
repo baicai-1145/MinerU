@@ -107,6 +107,7 @@ def _process_output(
         f_draw_span_bbox,
         f_dump_orig_pdf,
         f_dump_md,
+        f_dump_asciidoc,
         f_dump_content_list,
         f_dump_middle_json,
         f_dump_model_output,
@@ -187,6 +188,13 @@ def _process_output(
             md_content_str,
         )
 
+    if f_dump_asciidoc:
+        adoc_content_str = make_func(pdf_info, MakeMode.ADOC, image_dir)
+        md_writer.write_string(
+            f"{pdf_file_name}.adoc",
+            adoc_content_str,
+        )
+
     if f_dump_content_list:
         content_list = ensure_content_list()
         md_writer.write_string(
@@ -248,6 +256,7 @@ def _process_pipeline(
         f_draw_layout_bbox,
         f_draw_span_bbox,
         f_dump_md,
+        f_dump_asciidoc,
         f_dump_middle_json,
         f_dump_model_output,
         f_dump_orig_pdf,
@@ -290,7 +299,7 @@ def _process_pipeline(
         _process_output(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
-            f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_md, f_dump_asciidoc, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
             f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, model_json, is_pipeline=True
         )
@@ -304,6 +313,7 @@ async def _async_process_vlm(
         f_draw_layout_bbox,
         f_draw_span_bbox,
         f_dump_md,
+        f_dump_asciidoc,
         f_dump_middle_json,
         f_dump_model_output,
         f_dump_orig_pdf,
@@ -335,7 +345,7 @@ async def _async_process_vlm(
         _process_output(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
-            f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_md, f_dump_asciidoc, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
             f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, infer_result, is_pipeline=False
         )
@@ -349,6 +359,7 @@ def _process_vlm(
         f_draw_layout_bbox,
         f_draw_span_bbox,
         f_dump_md,
+        f_dump_asciidoc,
         f_dump_middle_json,
         f_dump_model_output,
         f_dump_orig_pdf,
@@ -380,7 +391,7 @@ def _process_vlm(
         _process_output(
             pdf_info, pdf_bytes, pdf_file_name, local_md_dir, local_image_dir,
             md_writer, f_draw_layout_bbox, f_draw_span_bbox, f_dump_orig_pdf,
-            f_dump_md, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
+            f_dump_md, f_dump_asciidoc, f_dump_content_list, f_dump_middle_json, f_dump_model_output,
             f_dump_html, f_dump_docx, f_dump_latex,
             f_make_md_mode, middle_json, infer_result, is_pipeline=False
         )
@@ -399,6 +410,7 @@ def do_parse(
         f_draw_layout_bbox=True,
         f_draw_span_bbox=True,
         f_dump_md=True,
+        f_dump_asciidoc=False,
         f_dump_middle_json=True,
         f_dump_model_output=True,
         f_dump_orig_pdf=True,
@@ -418,7 +430,7 @@ def do_parse(
         _process_pipeline(
             output_dir, pdf_file_names, pdf_bytes_list, p_lang_list,
             parse_method, formula_enable, table_enable,
-            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
+            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_asciidoc, f_dump_middle_json,
             f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
             f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode
         )
@@ -434,7 +446,7 @@ def do_parse(
 
         _process_vlm(
             output_dir, pdf_file_names, pdf_bytes_list, backend,
-            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
+            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_asciidoc, f_dump_middle_json,
             f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
             f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode,
             server_url, **kwargs,
@@ -454,6 +466,7 @@ async def aio_do_parse(
         f_draw_layout_bbox=True,
         f_draw_span_bbox=True,
         f_dump_md=True,
+        f_dump_asciidoc=False,
         f_dump_middle_json=True,
         f_dump_model_output=True,
         f_dump_orig_pdf=True,
@@ -474,7 +487,7 @@ async def aio_do_parse(
         _process_pipeline(
             output_dir, pdf_file_names, pdf_bytes_list, p_lang_list,
             parse_method, formula_enable, table_enable,
-            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
+            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_asciidoc, f_dump_middle_json,
             f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
             f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode
         )
@@ -490,7 +503,7 @@ async def aio_do_parse(
 
         await _async_process_vlm(
             output_dir, pdf_file_names, pdf_bytes_list, backend,
-            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_middle_json,
+            f_draw_layout_bbox, f_draw_span_bbox, f_dump_md, f_dump_asciidoc, f_dump_middle_json,
             f_dump_model_output, f_dump_orig_pdf, f_dump_content_list,
             f_dump_html, f_dump_docx, f_dump_latex, f_make_md_mode,
             server_url, **kwargs,

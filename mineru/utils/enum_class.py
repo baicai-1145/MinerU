@@ -60,6 +60,7 @@ class MakeMode:
     MM_MD = 'mm_markdown'
     NLP_MD = 'nlp_markdown'
     CONTENT_LIST = 'content_list'
+    ADOC = 'asciidoc'
 
 
 class ModelPath:

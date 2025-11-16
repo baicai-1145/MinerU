@@ -1,6 +1,11 @@
 import re
 from loguru import logger
 
+from mineru.backend.exporters.asciidoc_utils import (
+    build_image_block,
+    detect_document_dual_column,
+    markdown_to_asciidoc_block,
+)
 from mineru.utils.config_reader import get_latex_delimiter_config
 from mineru.backend.pipeline.para_split import ListLineTag
 from mineru.utils.enum_class import BlockType, ContentType, MakeMode
@@ -188,6 +193,28 @@ def merge_para_with_text(para_block):
     return para_text
 
 
+def _markdown_block_for_para(para_block, img_buket_path):
+    block_markdown = make_blocks_to_markdown([para_block], MakeMode.MM_MD, img_buket_path)
+    if not block_markdown:
+        return None
+    return block_markdown[0]
+
+
+def make_blocks_to_asciidoc(paras_of_layout, img_buket_path: str = '', page_size=None):
+    page_blocks: list[str] = []
+    for para_block in paras_of_layout:
+        if para_block['type'] == BlockType.IMAGE:
+            image_block = build_image_block(para_block, page_size, img_buket_path, merge_para_with_text)
+            if image_block:
+                page_blocks.append(image_block)
+            continue
+        md_block = _markdown_block_for_para(para_block, img_buket_path)
+        if not md_block:
+            continue
+        page_blocks.append(markdown_to_asciidoc_block(md_block))
+    return page_blocks
+
+
 def make_blocks_to_content_list(para_block, img_buket_path, page_idx, page_size):
     para_type = para_block['type']
     para_content = {}
@@ -274,6 +301,10 @@ def union_make(pdf_info_dict: list,
                make_mode: str,
                img_buket_path: str = '',
                ):
+    dual_column = False
+    if make_mode == MakeMode.ADOC:
+        dual_column = detect_document_dual_column(pdf_info_dict)
+
     output_content = []
     for page_info in pdf_info_dict:
         paras_of_layout = page_info.get('para_blocks')
@@ -285,6 +316,11 @@ def union_make(pdf_info_dict: list,
                 continue
             page_markdown = make_blocks_to_markdown(paras_of_layout, make_mode, img_buket_path)
             output_content.extend(page_markdown)
+        elif make_mode == MakeMode.ADOC:
+            if not paras_of_layout:
+                continue
+            page_adoc = make_blocks_to_asciidoc(paras_of_layout, img_buket_path, page_size)
+            output_content.extend(page_adoc)
         elif make_mode == MakeMode.CONTENT_LIST:
             para_blocks = (paras_of_layout or []) + (paras_of_discarded or [])
             if not para_blocks:
@@ -294,7 +330,10 @@ def union_make(pdf_info_dict: list,
                 if para_content:
                     output_content.append(para_content)
 
-    if make_mode in [MakeMode.MM_MD, MakeMode.NLP_MD]:
+    if make_mode in [MakeMode.MM_MD, MakeMode.NLP_MD, MakeMode.ADOC]:
+        if make_mode == MakeMode.ADOC and dual_column:
+            output_content.insert(0, ":pdf-page-layout: two_column")
+            output_content.insert(1, "")
         return '\n\n'.join(output_content)
     elif make_mode == MakeMode.CONTENT_LIST:
         return output_content
