@@ -3,7 +3,9 @@ import re
 
 from mineru.backend.exporters.asciidoc_utils import (
     build_image_block,
+    build_style_block,
     detect_document_dual_column,
+    get_block_layout_flags,
     markdown_to_asciidoc_block,
 )
 from mineru.utils.config_reader import get_latex_delimiter_config, get_formula_enable, get_table_enable
@@ -152,18 +154,36 @@ def _markdown_block_for_para(para_block, img_buket_path):
     return blocks[0]
 
 
-def make_blocks_to_asciidoc(para_blocks, img_buket_path: str = '', page_size=None):
+def make_blocks_to_asciidoc(para_blocks, img_buket_path: str = '', page_size=None, page_layout=None):
     page_blocks: list[str] = []
     for para_block in para_blocks:
+        layout = get_block_layout_flags(para_block.get('bbox'), page_size, page_layout, para_block.get('type'))
         if para_block['type'] == BlockType.IMAGE:
             image_block = build_image_block(para_block, page_size, img_buket_path, merge_para_with_text)
             if image_block:
-                page_blocks.append(image_block)
+                classes = ["mineru-paragraph"]
+                if layout["span_full"]:
+                    classes.append("mineru-span-full")
+                if layout["center_page"] or layout["center_dual"] or layout.get("center_column"):
+                    classes.append("text-center")
+                if classes:
+                    page_blocks.append(f"[.{'.'.join(classes)}]\n{image_block}")
+                else:
+                    page_blocks.append(image_block)
             continue
         md_block = _markdown_block_for_para(para_block, img_buket_path)
         if not md_block:
             continue
-        page_blocks.append(markdown_to_asciidoc_block(md_block))
+        adoc_block = markdown_to_asciidoc_block(md_block)
+        classes: list[str] = ["mineru-paragraph"]
+        if layout["span_full"] or layout["center_dual"]:
+            classes.append("mineru-span-full")
+        if layout["center_page"] or layout["center_dual"] or layout.get("center_column"):
+            classes.append("text-center")
+        if classes:
+            page_blocks.append(f"[.{'.'.join(classes)}]\n{adoc_block}")
+        else:
+            page_blocks.append(adoc_block)
     return page_blocks
 
 
@@ -272,8 +292,9 @@ def union_make(pdf_info_dict: list,
     formula_enable = get_formula_enable(os.getenv('MINERU_VLM_FORMULA_ENABLE', 'True').lower() == 'true')
     table_enable = get_table_enable(os.getenv('MINERU_VLM_TABLE_ENABLE', 'True').lower() == 'true')
     dual_column = False
+    dual_pages: set[int] = set()
     if make_mode == MakeMode.ADOC:
-        dual_column = detect_document_dual_column(pdf_info_dict)
+        dual_column, dual_pages = detect_document_dual_column(pdf_info_dict)
 
     output_content = []
     for page_info in pdf_info_dict:
@@ -289,7 +310,8 @@ def union_make(pdf_info_dict: list,
         elif make_mode == MakeMode.ADOC:
             if not paras_of_layout:
                 continue
-            page_adoc = make_blocks_to_asciidoc(paras_of_layout, img_buket_path, page_size)
+            page_layout = page_info.get("_mineru_column_layout")
+            page_adoc = make_blocks_to_asciidoc(paras_of_layout, img_buket_path, page_size, page_layout)
             output_content.extend(page_adoc)
         elif make_mode == MakeMode.CONTENT_LIST:
             para_blocks = (paras_of_layout or []) + (paras_of_discarded or [])
@@ -300,9 +322,9 @@ def union_make(pdf_info_dict: list,
                 output_content.append(para_content)
 
     if make_mode in [MakeMode.MM_MD, MakeMode.NLP_MD, MakeMode.ADOC]:
-        if make_mode == MakeMode.ADOC and dual_column:
-            output_content.insert(0, ":pdf-page-layout: two_column")
-            output_content.insert(1, "")
+        if make_mode == MakeMode.ADOC:
+            style_block = build_style_block(dual_column)
+            output_content = style_block + output_content
         return '\n\n'.join(output_content)
     elif make_mode == MakeMode.CONTENT_LIST:
         return output_content
