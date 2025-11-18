@@ -16,6 +16,22 @@ _TEXTUAL_BLOCK_TYPES = {
     BlockType.LIST,
     BlockType.INDEX,
     BlockType.TITLE,
+    BlockType.INTERLINE_EQUATION,
+    BlockType.CODE,
+    BlockType.CODE_BODY,
+    BlockType.CODE_CAPTION,
+    BlockType.ALGORITHM,
+    BlockType.REF_TEXT,
+    BlockType.PHONETIC,
+    BlockType.ASIDE_TEXT,
+    BlockType.PAGE_FOOTNOTE,
+}
+_BODY_TEXT_BLOCK_TYPES = {
+    BlockType.TEXT,
+    BlockType.LIST,
+    BlockType.INDEX,
+    BlockType.REF_TEXT,
+    BlockType.ASIDE_TEXT,
 }
 
 for optional in [
@@ -53,6 +69,24 @@ def markdown_to_asciidoc_block(text: str) -> str:
     return re.sub(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)", _img, body)
 
 
+def _get_effective_bbox(block: Optional[dict]) -> Optional[List[float]]:
+    if not block:
+        return None
+    lines = block.get("lines")
+    if lines:
+        last_line = lines[-1] or {}
+        spans = last_line.get("spans")
+        if spans:
+            last_span = spans[-1] or {}
+            span_bbox = last_span.get("bbox")
+            if span_bbox and span_bbox[2] > span_bbox[0]:
+                return span_bbox
+    bbox = block.get("bbox")
+    if bbox and bbox[2] > bbox[0]:
+        return bbox
+    return None
+
+
 def detect_page_column_count(para_blocks: Iterable[dict], page_size: Optional[List[float]]) -> dict:
     bboxes: list[list[int]] = []
     for block in para_blocks:
@@ -67,11 +101,23 @@ def detect_page_column_count(para_blocks: Iterable[dict], page_size: Optional[Li
         return {"is_dual": False}
 
     page_width = page_size[0] if page_size and page_size[0] else 1000.0
-    centers = [(bbox[0] + bbox[2]) / 2 for bbox in bboxes]
-    widths = [bbox[2] - bbox[0] for bbox in bboxes]
+    centers: list[float] = []
+    widths: list[float] = []
     boundary = page_width * 0.5
-    left = sum(1 for c in centers if c < boundary)
-    right = len(centers) - left
+    left_boxes: list[list[int]] = []
+    right_boxes: list[list[int]] = []
+    for bbox in bboxes:
+        center = (bbox[0] + bbox[2]) / 2
+        centers.append(center)
+        width = bbox[2] - bbox[0]
+        widths.append(width)
+        if center < boundary:
+            left_boxes.append(bbox)
+        else:
+            right_boxes.append(bbox)
+
+    left = len(left_boxes)
+    right = len(right_boxes)
     if min(left, right) < len(centers) * 0.2:
         return {"is_dual": False}
 
@@ -79,15 +125,44 @@ def detect_page_column_count(para_blocks: Iterable[dict], page_size: Optional[Li
     if narrow_ratio < 0.4:
         return {"is_dual": False}
 
-    left_center = sum(c for c in centers if c < boundary) / max(left, 1)
-    right_center = sum(c for c in centers if c >= boundary) / max(right, 1)
+    def _median_center(column_boxes: list[list[int]]) -> float:
+        if not column_boxes:
+            return page_width * 0.25
+        narrow_boxes = [box for box in column_boxes if (box[2] - box[0]) <= page_width * _NARROW_WIDTH_RATIO]
+        boxes = narrow_boxes if narrow_boxes else column_boxes
+        centers = sorted((box[0] + box[2]) / 2 for box in boxes)
+        return centers[len(centers) // 2]
+
+    left_center = _median_center(left_boxes)
+    right_center = _median_center(right_boxes)
     if right_center - left_center < page_width * 0.2:
         return {"is_dual": False}
+
+    def _column_width(column_boxes: list[list[int]]) -> float:
+        if not column_boxes:
+            return 0.0
+        return sum((box[2] - box[0]) for box in column_boxes) / len(column_boxes)
+
+    def _column_bounds(center_value: float, avg_width: float) -> Optional[list[float]]:
+        if not avg_width:
+            return None
+        half_width = avg_width / 2
+        left_edge = max(0.0, (center_value - half_width) / page_width)
+        right_edge = min(1.0, (center_value + half_width) / page_width)
+        if right_edge - left_edge <= 0:
+            return None
+        return [left_edge, right_edge]
+
+    left_avg_width = _column_width(left_boxes)
+    right_avg_width = _column_width(right_boxes)
+
     return {
         "is_dual": True,
         "left_center": left_center / page_width,
         "right_center": right_center / page_width,
-        "column_width_ratio": sum(widths)/(len(widths)*page_width),
+        "column_width_ratio": sum(widths) / (len(widths) * page_width),
+        "left_bounds": _column_bounds(left_center, left_avg_width),
+        "right_bounds": _column_bounds(right_center, right_avg_width),
     }
 
 
@@ -155,6 +230,9 @@ def get_block_layout_flags(
     page_layout: Optional[dict],
     block_type: Optional[str],
     text_level: Optional[int] = None,
+    para_block: Optional[dict] = None,
+    prev_block: Optional[dict] = None,
+    next_block: Optional[dict] = None,
 ) -> dict:
     flags = {
         "span_full": False,
@@ -162,24 +240,93 @@ def get_block_layout_flags(
         "center_dual": False,
         "center_column": False,
     }
-    if not bbox or not page_size or not page_size[0]:
+    target_bbox = _get_effective_bbox(para_block) or bbox
+    if not target_bbox or not page_size or not page_size[0]:
         return flags
     page_width = page_size[0]
-    block_width = bbox[2] - bbox[0]
+    block_width = target_bbox[2] - target_bbox[0]
     width_ratio = block_width / page_width
-    center_ratio = (bbox[0] + bbox[2]) / (2 * page_width)
+    center_ratio = (target_bbox[0] + target_bbox[2]) / (2 * page_width)
 
     is_dual_page = bool(page_layout and page_layout.get("is_dual"))
 
-    if width_ratio >= _SPAN_FULL_THRESHOLD:
+    span_full_candidate = width_ratio >= _SPAN_FULL_THRESHOLD
+    if span_full_candidate:
         flags["span_full"] = True
-        # 跨列块默认也居中对齐
-        flags["center_page"] = True
-        return flags
+
+    def _is_gap_balanced(left_gap: float, right_gap: float, tolerance: float) -> bool:
+        return abs(left_gap - right_gap) <= tolerance
+
+    page_left = 0.0
+    page_right = page_width
+    page_tolerance = page_width * _CENTER_TOLERANCE
+
+    def _cancel_center_due_to_neighbors() -> None:
+        if block_type not in _BODY_TEXT_BLOCK_TYPES:
+            return
+        if not (flags["center_page"] or flags["center_dual"] or flags["center_column"]):
+            return
+
+        def _neighbor_indicates_body(neighbor: Optional[dict]) -> bool:
+            if not neighbor or neighbor.get("type") not in _TEXTUAL_BLOCK_TYPES:
+                return False
+            neighbor_bbox = _get_effective_bbox(neighbor)
+            if not neighbor_bbox:
+                return False
+            horizontal_gap = abs(neighbor_bbox[0] - target_bbox[0])
+            if horizontal_gap > page_width * 0.06:
+                return False
+            left_gap_n = neighbor_bbox[0] - page_left
+            right_gap_n = page_right - neighbor_bbox[2]
+            return not _is_gap_balanced(
+                left_gap_n,
+                right_gap_n,
+                max(page_tolerance, page_width * _COLUMN_MARGIN_RATIO),
+            )
+
+        if _neighbor_indicates_body(prev_block) or _neighbor_indicates_body(next_block):
+            flags["center_page"] = False
+            flags["center_dual"] = False
+            flags["center_column"] = False
 
     if not is_dual_page:
-        if abs(center_ratio - 0.5) <= _CENTER_TOLERANCE:
+        left_gap = target_bbox[0] - page_left
+        right_gap = page_right - target_bbox[2]
+        if _is_gap_balanced(left_gap, right_gap, page_tolerance):
             flags["center_page"] = True
+        if not flags["center_page"] and span_full_candidate:
+            flags["span_full"] = True
+        _cancel_center_due_to_neighbors()
+        return flags
+
+    def _bounds_from_ratio(bounds: Optional[list[float]]) -> Optional[tuple[float, float]]:
+        if not bounds or len(bounds) < 2:
+            return None
+        return bounds[0] * page_width, bounds[1] * page_width
+
+    def _check_column(bounds: Optional[tuple[float, float]]) -> tuple[bool, bool]:
+        if not bounds:
+            return (False, False)
+        col_left, col_right = bounds
+        col_width = col_right - col_left
+        membership_tol = max(page_width * _COLUMN_MARGIN_RATIO, col_width * 0.15)
+        if target_bbox[0] < col_left - membership_tol or target_bbox[2] > col_right + membership_tol:
+            return (False, False)
+        symmetry_tol = max(page_tolerance, col_width * _CENTER_TOLERANCE)
+        left_gap = target_bbox[0] - col_left
+        right_gap = col_right - target_bbox[2]
+        return True, _is_gap_balanced(left_gap, right_gap, symmetry_tol)
+
+    raw_left_bounds = page_layout.get("left_bounds") if page_layout else None
+    raw_right_bounds = page_layout.get("right_bounds") if page_layout else None
+    left_bounds = _bounds_from_ratio(raw_left_bounds)
+    right_bounds = _bounds_from_ratio(raw_right_bounds)
+    in_left, left_centered = _check_column(left_bounds)
+    in_right, right_centered = _check_column(right_bounds)
+    if in_left or in_right:
+        if left_centered or right_centered:
+            flags["center_column"] = True
+            _cancel_center_due_to_neighbors()
         return flags
 
     left_center = page_layout.get("left_center", 0.25) if page_layout else 0.25
@@ -188,19 +335,18 @@ def get_block_layout_flags(
     right_dist = abs(center_ratio - right_center)
     is_column_block = width_ratio <= _NARROW_WIDTH_RATIO and min(left_dist, right_dist) <= _COLUMN_MARGIN_RATIO
 
-    if is_column_block and block_type == BlockType.TITLE:
-        flags["center_column"] = True
+    if is_column_block:
+        _cancel_center_due_to_neighbors()
         return flags
 
-    if is_column_block and block_type == BlockType.INTERLINE_EQUATION:
-        # 列内公式，列内居中
-        flags["center_column"] = True
-        return flags
-
-    if not is_column_block and abs(center_ratio - 0.5) <= _COLUMN_MARGIN_RATIO:
+    left_gap = target_bbox[0] - page_left
+    right_gap = page_right - target_bbox[2]
+    if _is_gap_balanced(left_gap, right_gap, max(page_tolerance, page_width * _COLUMN_MARGIN_RATIO)):
         flags["center_dual"] = True
-    elif not is_column_block:
+    elif span_full_candidate:
         flags["span_full"] = True
+
+    _cancel_center_due_to_neighbors()
 
     return flags
 
@@ -208,14 +354,17 @@ def get_block_layout_flags(
 def build_style_block(enable_two_column: bool) -> List[str]:
     css_lines = [
         ".text-center { text-align: center; }",
-        ".mineru-paragraph { break-inside: avoid; }",
+        ".mineru-paragraph { break-inside: avoid; text-align: left; }",
+        ".mineru-paragraph.text-center { text-align: center; }",
         ".mineru-span-full { column-span: all; display: block; }",
-        ".mineru-paragraph.text-center .imageblock .title { text-align: center; }",
-        ".mineru-span-full .imageblock .title { text-align: center; }",
-        ".mineru-paragraph.text-center .imageblock { text-align: center; }",
-        ".mineru-span-full .imageblock { text-align: center; }",
-        ".mineru-paragraph.text-center .tableblock .title { text-align: center; }",
-        ".mineru-span-full .tableblock .title { text-align: center; }",
+        ".imageblock.text-center > .title { text-align: center; }",
+        ".imageblock.mineru-paragraph.text-center > .title { text-align: center; }",
+        ".imageblock.mineru-span-full > .title { text-align: center; }",
+        ".imageblock.text-center { text-align: center; }",
+        ".imageblock.mineru-span-full { text-align: center; }",
+        ".tableblock.text-center > .title { text-align: center; }",
+        ".tableblock.mineru-paragraph.text-center > .title { text-align: center; }",
+        ".tableblock.mineru-span-full > .title { text-align: center; }",
     ]
     if enable_two_column:
         css_lines.append("body.mineru-two-column { column-count: 2; column-gap: 2.4em; }")

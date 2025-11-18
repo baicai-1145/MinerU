@@ -8,6 +8,7 @@ from mineru.backend.exporters.asciidoc_utils import (
     get_block_layout_flags,
     markdown_to_asciidoc_block,
 )
+from mineru.backend.exporters.title_analysis import annotate_title_levels
 from mineru.utils.config_reader import get_latex_delimiter_config
 from mineru.backend.pipeline.para_split import ListLineTag
 from mineru.utils.enum_class import BlockType, ContentType, MakeMode
@@ -204,13 +205,18 @@ def _markdown_block_for_para(para_block, img_buket_path):
 
 def make_blocks_to_asciidoc(paras_of_layout, img_buket_path: str = '', page_size=None, page_layout=None):
     page_blocks: list[str] = []
-    for para_block in paras_of_layout:
+    for idx, para_block in enumerate(paras_of_layout):
+        prev_block = paras_of_layout[idx - 1] if idx > 0 else None
+        next_block = paras_of_layout[idx + 1] if idx + 1 < len(paras_of_layout) else None
         layout = get_block_layout_flags(
             para_block.get('bbox'),
             page_size,
             page_layout,
             para_block.get('type'),
             para_block.get('text_level', None),
+            para_block=para_block,
+            prev_block=prev_block,
+            next_block=next_block,
         )
         if para_block['type'] == BlockType.IMAGE:
             image_block = build_image_block(para_block, page_size, img_buket_path, merge_para_with_text)
@@ -327,6 +333,8 @@ def union_make(pdf_info_dict: list,
                make_mode: str,
                img_buket_path: str = '',
                ):
+    annotate_title_levels(pdf_info_dict, merge_para_with_text)
+
     dual_column = False
     dual_pages: set[int] = set()
     if make_mode == MakeMode.ADOC:
@@ -371,7 +379,11 @@ def union_make(pdf_info_dict: list,
 
 
 def get_title_level(block):
-    title_level = block.get('level', 1)
+    assigned_level = block.get('_mineru_title_level')
+    if isinstance(assigned_level, (int, float)) and assigned_level > 0:
+        title_level = int(assigned_level)
+    else:
+        title_level = block.get('level', 1)
     if title_level > 4:
         title_level = 4
     elif title_level < 1:
