@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 from typing import Callable, Dict, Iterable, List, Optional
 
+from loguru import logger
 from mineru.utils.enum_class import BlockType
+
+try:
+    import requests  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional dependency
+    requests = None  # type: ignore[assignment]
 
 _KEYWORD_MAJOR = {
     "ABSTRACT",
@@ -111,6 +119,10 @@ def annotate_title_levels(
     if not candidates:
         return
 
+    # 优先尝试使用外部 LLM 推断标题层级（通过 OPENAI_URL / OPENAI_KEY 配置）
+    if _assign_levels_via_llm(candidates):
+        return
+
     doc_title = _pick_document_title(candidates)
     if doc_title:
         doc_title["assigned_level"] = 1
@@ -183,6 +195,132 @@ def _extract_numeric_token(text: str) -> Optional[str]:
     token = token.replace("-", ".")
     token = re.sub(r"\s+", "", token)
     return token
+
+
+def _assign_levels_via_llm(candidates: List[dict]) -> bool:
+    """使用 LLM 推断标题层级；若失败则返回 False，不影响后续启发式逻辑。"""
+    base_url = os.getenv("OPENAI_URL") or os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    if not base_url or not api_key or requests is None:
+        return False
+
+    titles_payload = []
+    for idx, cand in enumerate(candidates):
+        cand_id = idx
+        cand["llm_id"] = cand_id
+        titles_payload.append(
+            {
+                "id": cand_id,
+                "text": cand["text"],
+                "page_index": cand["page_idx"],
+                "order": cand["order"],
+            }
+        )
+
+    system_prompt = (
+        "你是一个用于分析 PDF/论文标题结构的助手。\n"
+        "给你按阅读顺序排列的标题列表（含 id、text、page_index、order），"
+        "请判断每个标题的层级 level，范围 0–4：\n"
+        "- 1：文档主标题或一级章节标题（如 1 / I. / Abstract / Introduction 等上层标题）\n"
+        "- 2：次级章节标题（如 2、II.、Related Work 等）\n"
+        "- 3：再下一层（如 3.1、A. 子小节等）\n"
+        "- 4：更细一层（如 3.1.1 等），0 表示你认为它不应当作为标题层级使用。\n"
+        "请尽量保持层级连贯，不要跳级；同一模式（例如 1/2/3 或 I/II/III）应当映射到相同 level。\n"
+        "只输出一个 JSON 数组，不要输出任何额外文字。"
+    )
+
+    user_payload = {"titles": titles_payload}
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": json.dumps(user_payload, ensure_ascii=False),
+        },
+    ]
+
+    try:
+        resp = requests.post(  # type: ignore[union-attr]
+            base_url.rstrip("/") + "/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": 0,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        logger.info(f"[Title LLM] raw output: {content}")
+    except Exception as exc:  # pragma: no cover - 网络/环境问题
+        logger.warning(f"Title LLM request failed: {exc}")
+        return False
+
+    try:
+        result = _parse_llm_title_levels(content)
+        logger.info(f"[Title LLM] parsed levels: {result}")
+    except Exception as exc:  # pragma: no cover - LLM 输出异常
+        logger.warning(f"Title LLM output parse failed: {exc}")
+        return False
+
+    if not result:
+        return False
+
+    id_to_level: Dict[int, int] = {}
+    for item in result:
+        try:
+            cid = int(item["id"])
+            level = int(item["level"])
+        except Exception:
+            continue
+        if level < 0:
+            continue
+        if level > 4:
+            level = 4
+        id_to_level[cid] = level
+
+    if not id_to_level:
+        return False
+
+    for cand in candidates:
+        cid = cand.get("llm_id")
+        if cid is None:
+            continue
+        if cid in id_to_level:
+            level = id_to_level[cid]
+            if level > 0:
+                cand["block"]["_mineru_title_level"] = level
+
+    return True
+
+
+def _parse_llm_title_levels(text: str) -> List[dict]:
+    """从 LLM 文本输出中提取 JSON 数组。"""
+    text = text.strip()
+    # 尝试直接解析
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    # 尝试从 ```json ... ``` 或任意 [ ... ] 片段中提取
+    match = re.search(r"\[.*\]", text, re.S)
+    if not match:
+        raise ValueError("no JSON array found in LLM output")
+    return json.loads(match.group(0))
 
 
 def _clean_token(token: str) -> str:
