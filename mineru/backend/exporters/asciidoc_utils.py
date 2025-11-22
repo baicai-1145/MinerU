@@ -84,6 +84,21 @@ def _convert_html_table_to_asciidoc(text: str) -> Optional[str]:
     return "\n".join(lines)
 
 
+def _convert_math_to_stem(text: str) -> str:
+    def _repl_display(match: re.Match[str]) -> str:
+        content = match.group(1).strip()
+        return "[stem]\n++++\n" + content + "\n++++"
+
+    text = re.sub(r"\$\$\s*(.+?)\s*\$\$", _repl_display, text, flags=re.S)
+
+    def _repl_inline(match: re.Match[str]) -> str:
+        content = match.group(1).strip()
+        return f"stem:[{content}]"
+
+    text = re.sub(r"\$(?!\$)(.+?)(?<!\$)\$", _repl_inline, text)
+    return text
+
+
 def markdown_to_asciidoc_block(text: str) -> str:
     table_adoc = _convert_html_table_to_asciidoc(text)
     if table_adoc:
@@ -107,7 +122,9 @@ def markdown_to_asciidoc_block(text: str) -> str:
         alt_part = alt if alt else ""
         return f"image::{path}[{alt_part}]"
 
-    return re.sub(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)", _img, body)
+    body = re.sub(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)", _img, body)
+    body = _convert_math_to_stem(body)
+    return body
 
 
 def _get_effective_bbox(block: Optional[dict]) -> Optional[List[float]]:
@@ -262,7 +279,10 @@ def build_image_block(
     lines.append(f"image::{img_path}[{', '.join(attrs)}]")
     if footnotes:
         lines.append(" ".join(footnotes))
-    return "\n".join(lines)
+
+    body = "\n".join(lines)
+    body = _convert_math_to_stem(body)
+    return body
 
 
 def get_block_layout_flags(
@@ -426,5 +446,7 @@ def build_style_block(enable_two_column: bool) -> List[str]:
             "</script>"
         )
     block.append("++++")
+    block.append("")
+    block.append(":stem: latexmath")
     block.append("")
     return block
