@@ -47,7 +47,48 @@ for optional in [
         _TEXTUAL_BLOCK_TYPES.add(optional)
 
 
+def _convert_html_table_to_asciidoc(text: str) -> Optional[str]:
+    if "<table" not in text.lower():
+        return None
+    match = re.search(r"<table[^>]*>(.*?)</table>", text, flags=re.S | re.I)
+    if not match:
+        return None
+    inner = match.group(1)
+    rows_html = re.findall(r"<tr[^>]*>(.*?)</tr>", inner, flags=re.S | re.I)
+    if not rows_html:
+        return None
+
+    rows: list[list[str]] = []
+    for row_html in rows_html:
+        cells_html = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.S | re.I)
+        if not cells_html:
+            continue
+        cleaned_row: list[str] = []
+        for cell in cells_html:
+            cell_text = re.sub(r"<.*?>", "", cell)
+            cell_text = re.sub(r"\s+", " ", cell_text)
+            cell_text = cell_text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            cleaned_row.append(cell_text.strip())
+        if cleaned_row:
+            rows.append(cleaned_row)
+
+    if not rows:
+        return None
+
+    max_cols = max(len(r) for r in rows)
+    lines: list[str] = ['[options="header"]', "|==="]
+    for r in rows:
+        padded = r + [""] * (max_cols - len(r))
+        lines.append("| " + " | ".join(padded))
+    lines.append("|===")
+    return "\n".join(lines)
+
+
 def markdown_to_asciidoc_block(text: str) -> str:
+    table_adoc = _convert_html_table_to_asciidoc(text)
+    if table_adoc:
+        return table_adoc
+
     lines = text.splitlines()
     converted: list[str] = []
     for line in lines:
@@ -365,6 +406,8 @@ def build_style_block(enable_two_column: bool) -> List[str]:
         ".tableblock.text-center > .title { text-align: center; }",
         ".tableblock.mineru-paragraph.text-center > .title { text-align: center; }",
         ".tableblock.mineru-span-full > .title { text-align: center; }",
+        ".tableblock.text-center { margin-left: auto; margin-right: auto; }",
+        ".tableblock.mineru-span-full { margin-left: auto; margin-right: auto; }",
     ]
     if enable_two_column:
         css_lines.append("body.mineru-two-column { column-count: 2; column-gap: 2.4em; }")
